@@ -8,8 +8,13 @@ required=(
   "SECURITY_AND_DATA_BOUNDARY.md"
   "07_onsite_workflow/README.md"
   "07_onsite_workflow/tools/analyze_onsite_case.py"
+  "07_onsite_workflow/tools/onsite_pytest_probe.py"
+  "07_onsite_workflow/tools/trace_pytest_pipeline.py"
   "docs/现场实验操作清单.md"
+  "docs/pytest到中间文件完整追踪.md"
+  "docs/已知BMM调用链与现场待证实项.md"
   "scripts/run_onsite_analysis.sh"
+  "scripts/run_full_pytest_trace.sh"
   "scripts/run_onsite_selftest.sh"
   "tests/test_onsite_workflow.py"
 )

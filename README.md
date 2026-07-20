@@ -46,6 +46,28 @@ ONSITE_REPORT_CN.md
 06_binary/binary_summary.json
 ```
 
+## 从pytest追踪到文件生产者
+
+需要搞清楚pytest插件、测试函数、子进程和每个中间文件的生产者时：
+
+```bash
+PYTHON_BIN=/path/to/their/python \
+bash scripts/run_full_pytest_trace.sh \
+  --workdir /path/to/FlagGems \
+  --nodeid 'test/test_blas_ops_mem.py::test_accuracy_bmm_membound[dtype2-8192-64-2048]' \
+  --watch-root /path/to/dumps \
+  --dump /path/to/dumps \
+  --scan-root /path/to/FlagGems \
+  --scan-root /path/to/compiler/source-or-package \
+  --strace auto \
+  --run
+```
+
+首先阅读`PYTEST_PIPELINE_REPORT_CN.md`。完整说明见
+[docs/pytest到中间文件完整追踪.md](docs/pytest到中间文件完整追踪.md)。
+公开FlagGems机制与现场待证实内容的边界见
+[docs/已知BMM调用链与现场待证实项.md](docs/已知BMM调用链与现场待证实项.md)。
+
 ## 执行并记录测试
 
 确认测试命令和工作目录无误后：
