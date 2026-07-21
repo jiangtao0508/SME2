@@ -19,6 +19,12 @@ TOOL = (
     / "tools"
     / "trace_pytest_pipeline.py"
 )
+SUMMARY_TOOL = (
+    ROOT
+    / "07_onsite_workflow"
+    / "tools"
+    / "show_onsite_summary.py"
+)
 SPEC = importlib.util.spec_from_file_location("trace_pytest_pipeline", TOOL)
 TRACE_MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(TRACE_MODULE)
@@ -274,6 +280,26 @@ class PytestPipelineTraceTest(unittest.TestCase):
             )
             self.assertIn("pytest到中间文件完整追踪报告", report)
             self.assertIn("追踪会引入明显开销", report)
+
+            summary = subprocess.run(
+                [
+                    sys.executable,
+                    str(SUMMARY_TOOL),
+                    "--result",
+                    str(output),
+                ],
+                cwd=str(ROOT),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(summary.returncode, 0, summary.stdout)
+            self.assertIn("现场结论卡", summary.stdout)
+            self.assertIn("pytest：收集成功；运行成功", summary.stdout)
+            self.assertIn("torch.bmm=有", summary.stdout)
+            self.assertIn("00_input.mlir", summary.stdout)
+            self.assertIn("ArmSME MLIR首次出现", summary.stdout)
 
 
 if __name__ == "__main__":

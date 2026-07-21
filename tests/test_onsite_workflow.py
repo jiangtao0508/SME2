@@ -19,6 +19,12 @@ TOOL = (
     / "tools"
     / "analyze_onsite_case.py"
 )
+SUMMARY_TOOL = (
+    ROOT
+    / "07_onsite_workflow"
+    / "tools"
+    / "show_onsite_summary.py"
+)
 
 
 class OnsiteWorkflowTest(unittest.TestCase):
@@ -151,6 +157,23 @@ module { llvm.func @demo() attributes {aarch64_new_za} }
             )
             self.assertIn("dump中已有的反汇编文本", evidence)
             self.assertIn("`mopa`文本计数 `1`", evidence)
+
+            summary = subprocess.run(
+                [
+                    sys.executable,
+                    str(SUMMARY_TOOL),
+                    "--result",
+                    str(output),
+                ],
+                cwd=str(ROOT),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(summary.returncode, 0, summary.stdout)
+            self.assertIn("现场结论卡", summary.stdout)
+            self.assertIn("ArmSME MLIR首次出现", summary.stdout)
 
 
 if __name__ == "__main__":

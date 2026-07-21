@@ -68,6 +68,23 @@ bash scripts/run_full_pytest_trace.sh \
 公开FlagGems机制与现场待证实内容的边界见
 [docs/已知BMM调用链与现场待证实项.md](docs/已知BMM调用链与现场待证实项.md)。
 
+## 一屏查看现场结论
+
+不阅读长报告，自动选择最新一次追踪结果：
+
+```bash
+bash scripts/show_onsite_summary.sh
+```
+
+指定某次结果：
+
+```bash
+bash scripts/show_onsite_summary.sh \
+  --result onsite_results/pytest_trace_<时间>
+```
+
+它只在现场终端打印约20行结论，不上传、不打包原始结果。
+
 ## 执行并记录测试
 
 确认测试命令和工作目录无误后：
