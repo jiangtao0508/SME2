@@ -68,6 +68,34 @@ bash scripts/run_full_pytest_trace.sh \
 公开FlagGems机制与现场待证实内容的边界见
 [docs/已知BMM调用链与现场待证实项.md](docs/已知BMM调用链与现场待证实项.md)。
 
+## 运行时预取 Pass 插件
+
+`prefetch_plugin/` 是独立于平台源码构建的 MLIR Pass 插件，不修改或安装到
+LLVM、Triton、Triton-Shared。已在公开 Triton CPU SME 流程上验证：
+
+```text
+bufferize 后、ArmSME 前加载插件
+-> 导出 bufferized snapshot
+-> 识别 packed GEMM RHS panel
+-> 插入 memref.prefetch
+-> 生成 llvm.intr.prefetch
+-> AArch64 对象中同时存在 PRFM 与 FMOPA
+```
+
+现场从 [prefetch_plugin/ONSITE_RUNBOOK.md](prefetch_plugin/ONSITE_RUNBOOK.md)
+开始。第一阶段命令：
+
+```bash
+bash prefetch_plugin/onsite_stage1.sh \
+  /path/to/llvm-install \
+  /path/to/triton-shared-opt \
+  /path/to/00_input.mlir \
+  /path/to/project-output
+```
+
+插件必须在现场使用与 `triton-shared-opt` ABI 匹配的 LLVM/MLIR 重新编译，
+不能复制其他机器上预编译的 `.so`。
+
 ## 一屏查看现场结论
 
 不阅读长报告，自动选择最新一次追踪结果：
@@ -103,7 +131,8 @@ bash scripts/run_onsite_analysis.sh \
 
 ## 依赖
 
-基础功能只要求 Linux Shell 和 Python 3.8+。下列工具存在时会自动使用：
+基础分析功能只要求 Linux Shell 和 Python 3.8+。Pass 插件还要求 CMake、
+C++17 编译器及现场 LLVM/MLIR CMake package。下列工具存在时会自动使用：
 
 ```text
 llvm-objdump / objdump

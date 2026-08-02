@@ -5,3 +5,5 @@ onsite_results/
 *_report_bundle.tar.gz
 07_onsite_workflow/output/*
 !07_onsite_workflow/output/.gitkeep
+prefetch_plugin/build/
+prefetch_plugin/results/
