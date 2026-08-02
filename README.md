@@ -96,6 +96,10 @@ bash prefetch_plugin/onsite_stage1.sh \
 插件必须在现场使用与 `triton-shared-opt` ABI 匹配的 LLVM/MLIR 重新编译，
 不能复制其他机器上预编译的 `.so`。
 
+GEMM 在每一层 IR 中可利用的数据、预取语义，以及继续 materialize 所需的
+下层和硬件信息，见
+[docs/GEMM_各IR层软件预取信息与依赖.md](docs/GEMM_各IR层软件预取信息与依赖.md)。
+
 ## 一屏查看现场结论
 
 不阅读长报告，自动选择最新一次追踪结果：
