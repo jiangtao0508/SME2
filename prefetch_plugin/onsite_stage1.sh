@@ -15,6 +15,15 @@ OUTPUT_DIR="$(cd "$4" && pwd)"
 DISTANCE="${5:-4}"
 LOCALITY="${6:-3}"
 
+echo "NOTE: onsite_stage1.sh is the legacy direct-registry path." >&2
+echo "For static triton-shared-opt builds, use onsite_split_replay.sh instead." >&2
+TRITON_HELP="$("$TRITON_SHARED_OPT" --help 2>&1)"
+if [[ "$TRITON_HELP" != *"tptr-to-llvm"* ]]; then
+  echo "the second argument is not a Triton-Shared driver with tptr-to-llvm" >&2
+  echo "do not substitute LLVM mlir-opt for triton-shared-opt" >&2
+  exit 1
+fi
+
 if [[ "$OUTPUT_DIR" == *" "* ]]; then
   echo "output directory must not contain spaces: $OUTPUT_DIR" >&2
   exit 1

@@ -81,6 +81,37 @@ git -C /absolute/path/to/llvm-project status --short
 
 ## 4. 推荐现场路径：split replay
 
+推荐先运行完整的一键流程：
+
+```bash
+bash prefetch_plugin/onsite_full_experiment.sh \
+  "$LLVM_INSTALL_DIR" \
+  "$TRITON_SHARED_OPT" \
+  /absolute/path/to/triton-shared/backend/compiler.py \
+  /absolute/path/to/00_input.mlir \
+  /absolute/path/to/project-output \
+  /absolute/path/to/PrefetchPlan.json
+```
+
+它按顺序执行环境预检、无预取 round-trip、预取插入、恢复 SME lowering 和
+对象码检查。任一步失败时，`ONSITE_PREFETCH_RESULT.txt` 会记录失败阶段和对应
+日志；成功时记录 `llvm.intr.prefetch`、`arm_sme.intr.mopa`、`PRFM` 与
+`FMOPA` 数量。
+
+其中无预取 round-trip 可以单独运行：
+
+```bash
+bash prefetch_plugin/onsite_split_replay.sh \
+  "$LLVM_INSTALL_DIR" "$TRITON_SHARED_OPT" \
+  /absolute/path/to/00_input.mlir \
+  /absolute/path/to/project-output \
+  roundtrip
+```
+
+它比较原始完整 schedule 与切开后恢复的 `arm_sme.intr.mopa` 数量，并要求
+round-trip 结果不包含 prefetch。只有这一步通过，才把后续差异归因于预取
+改写。
+
 当 `mlir-opt` 成功而 `triton-shared-opt` 无法看到注册 pass 时，运行：
 
 ```bash

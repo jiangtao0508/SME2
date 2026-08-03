@@ -19,6 +19,10 @@ required=(
   "scripts/show_onsite_summary.sh"
   "scripts/run_onsite_selftest.sh"
   "tests/test_onsite_workflow.py"
+  "prefetch_plugin/onsite_preflight.sh"
+  "prefetch_plugin/onsite_split_replay.sh"
+  "prefetch_plugin/onsite_full_experiment.sh"
+  "prefetch_plugin/prefetch_plan_options.py"
 )
 
 missing=0

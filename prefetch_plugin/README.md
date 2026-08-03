@@ -81,4 +81,29 @@ The split is bufferization -> `mlir-opt` prefetch insertion -> resumed ArmSME
 lowering. It preserves the platform pipeline without requiring the custom pass
 to appear in `triton-shared-opt --help`.
 
+For the complete guarded workflow, including tool/version preflight, a
+no-prefetch split round-trip, PrefetchPlan materialization, LLVM/object
+generation, and a compact result file, run:
+
+```bash
+bash prefetch_plugin/onsite_full_experiment.sh \
+  /absolute/path/to/llvm-install \
+  /absolute/path/to/triton-shared-opt \
+  /absolute/path/to/triton-shared/backend/compiler.py \
+  /absolute/path/to/00_input.mlir \
+  /absolute/path/to/output \
+  /absolute/path/to/PrefetchPlan.json
+```
+
+The final summary is `output/ONSITE_PREFETCH_RESULT.txt`. The PrefetchPlan
+adapter currently accepts one `TILE_PREFETCH` decision with `ITERATION`
+distance and `PANEL`/`TILE` granularity. Its explicit MVP cache mapping is
+`L1 -> locality 3` and `L2 -> locality 2`, matching LLVM 20's AArch64
+lowering (`1` denotes L3 keep and `0` denotes streaming).
+
+`test_gemm_rhs_types.sh` verifies that the structural matcher accepts f16,
+bf16, f32, and f64 synthetic bufferized panels. This is intentionally reported
+as matcher coverage, not as four complete ArmSME pipelines. It also exercises
+the cross-product of distances `1,2,4,8` and localities `0,1,2,3`.
+
 See `ONSITE_RUNBOOK.md` for the no-platform-modification workflow.

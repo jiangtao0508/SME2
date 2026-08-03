@@ -3,7 +3,7 @@ set -euo pipefail
 
 if [[ $# -lt 5 || $# -gt 7 ]]; then
   echo "usage: $0 <llvm-install-prefix> <triton-shared-opt> <00_input.mlir> <output-dir> <mode> [distance] [locality]" >&2
-  echo "mode: snapshot | gemm-rhs" >&2
+  echo "mode: snapshot | roundtrip | gemm-rhs" >&2
   exit 2
 fi
 
@@ -18,8 +18,8 @@ DISTANCE="${6:-4}"
 LOCALITY="${7:-3}"
 MLIR_OPT="$LLVM_INSTALL_DIR/bin/mlir-opt"
 
-if [[ "$MODE" != "snapshot" && "$MODE" != "gemm-rhs" ]]; then
-  echo "mode must be snapshot or gemm-rhs" >&2
+if [[ "$MODE" != "snapshot" && "$MODE" != "roundtrip" && "$MODE" != "gemm-rhs" ]]; then
+  echo "mode must be snapshot, roundtrip, or gemm-rhs" >&2
   exit 1
 fi
 if [[ "$OUTPUT_DIR" == *" "* ]]; then
@@ -32,22 +32,6 @@ if ! [[ "$DISTANCE" =~ ^[1-9][0-9]*$ ]]; then
 fi
 if ! [[ "$LOCALITY" =~ ^[0-3]$ ]]; then
   echo "locality must be 0, 1, 2, or 3: $LOCALITY" >&2
-  exit 1
-fi
-
-bash "$PLUGIN_DIR/build_and_smoke_mlir_opt.sh" "$LLVM_INSTALL_DIR"
-
-PLUGIN_LIBRARY=""
-for candidate in \
-  "$PLUGIN_DIR/build/PrefetchPassPlugin.so" \
-  "$PLUGIN_DIR/build/PrefetchPassPlugin.dylib"; do
-  if [[ -f "$candidate" ]]; then
-    PLUGIN_LIBRARY="$candidate"
-    break
-  fi
-done
-if [[ -z "$PLUGIN_LIBRARY" ]]; then
-  echo "plugin library was not produced" >&2
   exit 1
 fi
 
@@ -73,6 +57,57 @@ if [[ "$MODE" == "snapshot" ]]; then
   exit 0
 fi
 
+RESUME_INPUT="$OUTPUT_DIR/00_resume_after_prefetch.mlir"
+FINAL_01="$OUTPUT_DIR/01_gemm_rhs_prefetch.mlir"
+
+if [[ "$MODE" == "roundtrip" ]]; then
+  BASELINE_01="$OUTPUT_DIR/01_baseline_full_schedule.mlir"
+  FINAL_01="$OUTPUT_DIR/01_roundtrip_no_prefetch.mlir"
+  "$TRITON_SHARED_OPT" "$ORIGINAL_INPUT" \
+    --mlir-disable-threading \
+    --transform-interpreter \
+    -o "$BASELINE_01"
+  python3 "$PLUGIN_DIR/split_transform_replay.py" resume \
+    "$ORIGINAL_INPUT" "$BUFFERIZED" "$RESUME_INPUT"
+  "$TRITON_SHARED_OPT" "$RESUME_INPUT" \
+    --mlir-disable-threading \
+    --transform-interpreter \
+    -o "$FINAL_01"
+
+  BASELINE_SME_COUNT="$(grep -c 'arm_sme.intr.mopa' "$BASELINE_01" || true)"
+  ROUNDTRIP_SME_COUNT="$(grep -c 'arm_sme.intr.mopa' "$FINAL_01" || true)"
+  ROUNDTRIP_PREFETCH_COUNT="$(grep -c 'llvm.intr.prefetch' "$FINAL_01" || true)"
+  if [[ "$BASELINE_SME_COUNT" -eq 0 || "$BASELINE_SME_COUNT" -ne "$ROUNDTRIP_SME_COUNT" ]]; then
+    echo "round-trip changed the ArmSME MOPA count" >&2
+    echo "baseline=$BASELINE_SME_COUNT roundtrip=$ROUNDTRIP_SME_COUNT" >&2
+    exit 1
+  fi
+  if [[ "$ROUNDTRIP_PREFETCH_COUNT" -ne 0 ]]; then
+    echo "round-trip unexpectedly contains LLVM prefetch operations" >&2
+    exit 1
+  fi
+  echo "PASS: no-prefetch split round-trip preserved arm_sme.intr.mopa=$ROUNDTRIP_SME_COUNT"
+  echo "baseline: $BASELINE_01"
+  echo "roundtrip: $FINAL_01"
+  exit 0
+fi
+
+bash "$PLUGIN_DIR/build_and_smoke_mlir_opt.sh" "$LLVM_INSTALL_DIR"
+
+PLUGIN_LIBRARY=""
+for candidate in \
+  "$PLUGIN_DIR/build/PrefetchPassPlugin.so" \
+  "$PLUGIN_DIR/build/PrefetchPassPlugin.dylib"; do
+  if [[ -f "$candidate" ]]; then
+    PLUGIN_LIBRARY="$candidate"
+    break
+  fi
+done
+if [[ -z "$PLUGIN_LIBRARY" ]]; then
+  echo "plugin library was not produced" >&2
+  exit 1
+fi
+
 PREFETCHED="$OUTPUT_DIR/bufferized_before_sme.prefetch.mlir"
 "$MLIR_OPT" \
   --load-pass-plugin="$PLUGIN_LIBRARY" \
@@ -81,8 +116,6 @@ PREFETCHED="$OUTPUT_DIR/bufferized_before_sme.prefetch.mlir"
   -o "$PREFETCHED"
 grep -q 'memref.prefetch' "$PREFETCHED"
 
-RESUME_INPUT="$OUTPUT_DIR/00_resume_after_prefetch.mlir"
-FINAL_01="$OUTPUT_DIR/01_gemm_rhs_prefetch.mlir"
 python3 "$PLUGIN_DIR/split_transform_replay.py" resume \
   "$ORIGINAL_INPUT" "$PREFETCHED" "$RESUME_INPUT"
 "$TRITON_SHARED_OPT" "$RESUME_INPUT" \

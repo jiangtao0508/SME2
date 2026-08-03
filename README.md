@@ -83,10 +83,16 @@ bufferize 后、ArmSME 前加载插件
 ```
 
 现场从 [prefetch_plugin/ONSITE_RUNBOOK.md](prefetch_plugin/ONSITE_RUNBOOK.md)
-开始。先用 LLVM 自带的 `mlir-opt` 验证插件：
+开始。推荐直接运行带预检、无预取 round-trip 和分阶段日志的一键流程：
 
 ```bash
-bash prefetch_plugin/build_and_smoke_mlir_opt.sh /path/to/llvm-install
+bash prefetch_plugin/onsite_full_experiment.sh \
+  /path/to/llvm-install \
+  /path/to/triton-shared-opt \
+  /path/to/triton-shared/backend/compiler.py \
+  /path/to/00_input.mlir \
+  /path/to/project-output \
+  /path/to/PrefetchPlan.json
 ```
 
 如果 `mlir-opt` 成功，而 `triton-shared-opt` 报 pass 未注册，说明两者没有
@@ -100,6 +106,10 @@ bash prefetch_plugin/onsite_split_replay.sh \
   /path/to/project-output \
   gemm-rhs 4 3
 ```
+
+最终结论写入 `project-output/ONSITE_PREFETCH_RESULT.txt`；任何失败都会标明
+具体阶段及对应日志。`mlir-opt` 只负责运行项目插件，`tptr-to-llvm`、ArmSME
+和 Transform schedule 始终由 `triton-shared-opt` 执行。
 
 插件必须在现场使用与 `triton-shared-opt` ABI 匹配的 LLVM/MLIR 重新编译，
 不能复制其他机器上预编译的 `.so`。
