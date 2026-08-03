@@ -22,7 +22,7 @@ git rev-parse HEAD
 这里的 LLVM 安装必须与现场 `triton-shared-opt` 使用的 LLVM/MLIR 版本和
 ABI 匹配。不能拿本机编好的 `.so` 直接复制过去。
 
-## 2. 一键构建和冒烟测试
+## 2. 先判断 Pass Registry 是否兼容
 
 ```bash
 bash prefetch_plugin/build_and_smoke.sh \
@@ -40,6 +40,31 @@ PASS: memref.prefetch lowered to llvm.prefetch and AArch64 prfm
 Linux 插件通常是 `prefetch_plugin/build/PrefetchPassPlugin.so`；macOS 是
 `.dylib`。
 
+如果 LLVM 自带的 `mlir-opt` 能加载插件，而 `triton-shared-opt` 报：
+
+```text
+'prefetch-materialize' does not refer to a registered pass or pass pipeline
+```
+
+这说明插件本身已经成功注册到它所链接的 MLIR，但现场
+`triton-shared-opt` 与插件没有共享同一个 Pass Registry。常见原因是
+`triton-shared-opt` 静态链接了另一份 MLIR；这不是 `prefetch-gemm-rhs`
+匹配失败，也不能靠改 pass 名称解决。先用下面命令确认插件本体：
+
+```bash
+bash prefetch_plugin/build_and_smoke_mlir_opt.sh "$LLVM_INSTALL_DIR"
+```
+
+成功标志：
+
+```text
+PASS: mlir-opt loaded prefetch plugin
+PASS: memref.prefetch lowered to llvm.prefetch and AArch64 prfm
+```
+
+此时不要修改平台 CMake 或重新链接 `triton-shared-opt`，直接使用第 4 节的
+split replay。
+
 ## 3. 对现场 lowering 做只读基线记录
 
 先使用对方原始命令生成一份未修改的完整 dump。把需要实验的
@@ -54,7 +79,61 @@ git -C /absolute/path/to/llvm-project status --short
 
 如果现场仓库本来就有未提交内容，只记录，不清理、不覆盖。
 
-## 4. 第一阶段一键实验
+## 4. 推荐现场路径：split replay
+
+当 `mlir-opt` 成功而 `triton-shared-opt` 无法看到注册 pass 时，运行：
+
+```bash
+bash prefetch_plugin/onsite_split_replay.sh \
+  "$LLVM_INSTALL_DIR" \
+  "$TRITON_SHARED_OPT" \
+  /absolute/path/to/00_input.mlir \
+  /absolute/path/to/project-output \
+  gemm-rhs 4 3
+```
+
+这条路径仍然使用现场原有 lowering，但把插件执行隔离到 LLVM 自带的
+`mlir-opt`：
+
+```text
+triton-shared-opt: Transform schedule 执行到 bufferization
+mlir-opt + plugin: 插入 memref.prefetch
+triton-shared-opt: 从 ArmSME schedule 恢复并继续 lowering
+```
+
+它不修改 LLVM、Triton 或 Triton-Shared 的源码、CMake 和安装目录。脚本先
+生成 bufferized payload，再生成恢复用的副本，并检查最终 IR 同时包含
+`llvm.intr.prefetch` 与 `arm_sme.intr.mopa`。公开 GEMM 上的本机结果是 4 个
+prefetch 和 16 个 MOPA。
+
+如果只想先取得真实 bufferized IR 而不运行 matcher：
+
+```bash
+bash prefetch_plugin/onsite_split_replay.sh \
+  "$LLVM_INSTALL_DIR" "$TRITON_SHARED_OPT" \
+  /absolute/path/to/00_input.mlir \
+  /absolute/path/to/project-output \
+  snapshot
+```
+
+split replay 成功后，继续生成 LLIR 和对象：
+
+```bash
+bash prefetch_plugin/onsite_stage2.sh \
+  "$LLVM_INSTALL_DIR" \
+  "$TRITON_SHARED_OPT" \
+  /absolute/path/to/triton-shared/backend/compiler.py \
+  /absolute/path/to/project-output/01_gemm_rhs_prefetch.mlir \
+  /absolute/path/to/project-output/final
+```
+
+对象码成功标志类似：
+
+```text
+PASS: object contains PRFM=4 and FMOPA=16
+```
+
+## 5. 直接加载路径（仅限 Registry 兼容的构建）
 
 取得现场生成的 `00_input.mlir` 后运行：
 
@@ -100,7 +179,7 @@ override hash 目录，并设置 `TRITON_ALWAYS_COMPILE=1` 验证 override 日�
 正确性通过后，按照 `prefetch_plugin/EXPERIMENT_MATRIX.md` 运行
 `distance=1/2/4/8` 的第一轮扫描。
 
-## 5. 插入点
+## 6. 插入点
 
 使用脚本生成副本；脚本会在 `@__transform_main` 中，把调用插在
 `@__bufferize_schedule` 与 `@__arm_sme_lowering_schedule` 之间，并拒绝
@@ -137,9 +216,10 @@ python3 prefetch_plugin/inject_schedule.py \
 执行现场原有的 erase schedule、LLVM 后处理、`mlir-translate` 和 LLIR
 override 流程。
 
-## 6. 明天第一轮的停止条件
+## 7. 现场实验的停止条件
 
-- `--load-pass-plugin` 不存在：停止插件路线，保留输出，改走独立 IR rewrite。
+- `--load-pass-plugin` 不存在，或 `mlir-opt` 成功但 `triton-shared-opt` 报
+  unregistered pass：保留输出，使用 split replay，不再尝试直接注册。
 - 动态库加载时报 undefined symbol/ABI 错误：停止，不替换平台库；改用现场准确
   的 LLVM/MLIR 安装重新编译。
 - 冒烟测试通过但真实 BMM 匹配失败：这是 resolver 规则不够，不是插件机制

@@ -1,8 +1,11 @@
 # Prefetch pass plugin
 
-This project-owned MLIR pass plugin is loaded at runtime by the existing
-`triton-shared-opt`. It does not modify or install into LLVM, Triton, or
-Triton-Shared.
+This project-owned MLIR pass plugin can be loaded by an MLIR-compatible driver.
+It does not modify or install into LLVM, Triton, or Triton-Shared. Some
+statically linked `triton-shared-opt` builds do not share their pass registry
+with a plugin built against the LLVM installation. For those builds, the
+supported workflow runs the plugin in LLVM's `mlir-opt` between two replayed
+parts of the original Triton Transform schedule.
 
 The first smoke-test implementation supports a deliberately narrow pattern:
 
@@ -58,5 +61,24 @@ bash prefetch_plugin/build_and_smoke.sh \
   /absolute/path/to/llvm-install \
   /absolute/path/to/triton-shared-opt
 ```
+
+If `mlir-opt` succeeds but `triton-shared-opt` reports that
+`prefetch-materialize` is not registered, verify and use the split workflow:
+
+```bash
+bash prefetch_plugin/build_and_smoke_mlir_opt.sh \
+  /absolute/path/to/llvm-install
+
+bash prefetch_plugin/onsite_split_replay.sh \
+  /absolute/path/to/llvm-install \
+  /absolute/path/to/triton-shared-opt \
+  /absolute/path/to/00_input.mlir \
+  /absolute/path/to/output \
+  gemm-rhs 4 3
+```
+
+The split is bufferization -> `mlir-opt` prefetch insertion -> resumed ArmSME
+lowering. It preserves the platform pipeline without requiring the custom pass
+to appear in `triton-shared-opt --help`.
 
 See `ONSITE_RUNBOOK.md` for the no-platform-modification workflow.

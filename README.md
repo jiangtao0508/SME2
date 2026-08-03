@@ -83,14 +83,22 @@ bufferize 后、ArmSME 前加载插件
 ```
 
 现场从 [prefetch_plugin/ONSITE_RUNBOOK.md](prefetch_plugin/ONSITE_RUNBOOK.md)
-开始。第一阶段命令：
+开始。先用 LLVM 自带的 `mlir-opt` 验证插件：
 
 ```bash
-bash prefetch_plugin/onsite_stage1.sh \
+bash prefetch_plugin/build_and_smoke_mlir_opt.sh /path/to/llvm-install
+```
+
+如果 `mlir-opt` 成功，而 `triton-shared-opt` 报 pass 未注册，说明两者没有
+共享 MLIR Pass Registry。无需修改平台源码，使用分段 replay：
+
+```bash
+bash prefetch_plugin/onsite_split_replay.sh \
   /path/to/llvm-install \
   /path/to/triton-shared-opt \
   /path/to/00_input.mlir \
-  /path/to/project-output
+  /path/to/project-output \
+  gemm-rhs 4 3
 ```
 
 插件必须在现场使用与 `triton-shared-opt` ABI 匹配的 LLVM/MLIR 重新编译，
