@@ -22,7 +22,8 @@ The plugin now also contains:
 - `prefetch-snapshot`: writes the exact bufferized `func.func` seen between
   bufferization and ArmSME lowering;
 - `prefetch-gemm-rhs`: an experimental structural matcher for the packed RHS
-  panel in the public GEMM reproducer.
+  panel in the public GEMM reproducer. It supports `coverage-lines`,
+  `issue-every`, and `cache-line-bytes` in addition to distance/locality.
 
 The public GEMM test completes the full chain:
 
@@ -104,6 +105,20 @@ lowering (`1` denotes L3 keep and `0` denotes streaming).
 `test_gemm_rhs_types.sh` verifies that the structural matcher accepts f16,
 bf16, f32, and f64 synthetic bufferized panels. This is intentionally reported
 as matcher coverage, not as four complete ArmSME pipelines. It also exercises
-the cross-product of distances `1,2,4,8` and localities `0,1,2,3`.
+the cross-product of distances `1,2,4,8` and localities `0,1,2,3`, plus
+coverage lines `1,2,4` and issue frequencies `1,2`.
+
+For example, this requests two consecutive 64-byte L2 lines every second K
+iteration:
+
+```text
+prefetch-gemm-rhs{distance=4 locality=2 coverage-lines=2 issue-every=2 cache-line-bytes=64}
+```
+
+`PrefetchPlan.granularity.bytes` is rounded up by the adapter to
+`coverage-lines` using `hardware_profile.cache_line_bytes`. Missing
+`granularity.bytes` deliberately defaults to one line. `issue-every` remains an
+explicit rewrite experiment parameter because PrefetchPlan 1.0 has no frequency
+field.
 
 See `ONSITE_RUNBOOK.md` for the no-platform-modification workflow.

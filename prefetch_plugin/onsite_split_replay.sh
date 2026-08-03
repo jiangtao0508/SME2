@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -lt 5 || $# -gt 7 ]]; then
-  echo "usage: $0 <llvm-install-prefix> <triton-shared-opt> <00_input.mlir> <output-dir> <mode> [distance] [locality]" >&2
+if [[ $# -lt 5 || $# -gt 10 ]]; then
+  echo "usage: $0 <llvm-install-prefix> <triton-shared-opt> <00_input.mlir> <output-dir> <mode> [distance] [locality] [coverage-lines] [issue-every] [cache-line-bytes]" >&2
   echo "mode: snapshot | roundtrip | gemm-rhs" >&2
   exit 2
 fi
@@ -16,6 +16,9 @@ OUTPUT_DIR="$(cd "$4" && pwd)"
 MODE="$5"
 DISTANCE="${6:-4}"
 LOCALITY="${7:-3}"
+COVERAGE_LINES="${8:-1}"
+ISSUE_EVERY="${9:-1}"
+CACHE_LINE_BYTES="${10:-64}"
 MLIR_OPT="$LLVM_INSTALL_DIR/bin/mlir-opt"
 
 if [[ "$MODE" != "snapshot" && "$MODE" != "roundtrip" && "$MODE" != "gemm-rhs" ]]; then
@@ -34,6 +37,12 @@ if ! [[ "$LOCALITY" =~ ^[0-3]$ ]]; then
   echo "locality must be 0, 1, 2, or 3: $LOCALITY" >&2
   exit 1
 fi
+for positive_option in "$COVERAGE_LINES" "$ISSUE_EVERY" "$CACHE_LINE_BYTES"; do
+  if ! [[ "$positive_option" =~ ^[1-9][0-9]*$ ]]; then
+    echo "coverage-lines, issue-every, and cache-line-bytes must be positive integers" >&2
+    exit 1
+  fi
+done
 
 PREFIX_INPUT="$OUTPUT_DIR/00_prefix_to_bufferize.mlir"
 PREFIX_WITH_SCHEDULE="$OUTPUT_DIR/01_prefix_with_schedule.mlir"
@@ -111,7 +120,7 @@ fi
 PREFETCHED="$OUTPUT_DIR/bufferized_before_sme.prefetch.mlir"
 "$MLIR_OPT" \
   --load-pass-plugin="$PLUGIN_LIBRARY" \
-  --pass-pipeline="builtin.module(builtin.module(func.func(prefetch-gemm-rhs{distance=$DISTANCE locality=$LOCALITY})))" \
+  --pass-pipeline="builtin.module(builtin.module(func.func(prefetch-gemm-rhs{distance=$DISTANCE locality=$LOCALITY coverage-lines=$COVERAGE_LINES issue-every=$ISSUE_EVERY cache-line-bytes=$CACHE_LINE_BYTES})))" \
   "$BUFFERIZED" \
   -o "$PREFETCHED"
 grep -q 'memref.prefetch' "$PREFETCHED"
@@ -133,5 +142,5 @@ fi
 
 echo "PASS: split replay completed"
 echo "PASS: llvm.intr.prefetch=$PREFETCH_COUNT arm_sme.intr.mopa=$SME_COUNT"
-echo "configuration: distance=$DISTANCE locality=$LOCALITY"
+echo "configuration: distance=$DISTANCE locality=$LOCALITY coverage-lines=$COVERAGE_LINES issue-every=$ISSUE_EVERY cache-line-bytes=$CACHE_LINE_BYTES"
 echo "next: run onsite_stage2.sh with $FINAL_01"

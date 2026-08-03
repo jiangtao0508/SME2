@@ -15,7 +15,7 @@ LOCALITY_BY_CACHE = {"L1": 3, "L2": 2}
 
 def resolve(
     plan: dict, decision_id: Optional[str] = None
-) -> Tuple[int, int, str, str]:
+) -> Tuple[int, int, int, int, str, str]:
     if plan.get("schema_version") != "1.0":
         raise ValueError("expected PrefetchPlan schema_version 1.0")
     decisions = plan.get("decisions")
@@ -43,7 +43,8 @@ def resolve(
     target_cache = decision.get("target_cache")
     if target_cache not in LOCALITY_BY_CACHE:
         raise ValueError("target_cache must be L1 or L2")
-    granularity = decision.get("granularity", {}).get("kind")
+    granularity_spec = decision.get("granularity", {})
+    granularity = granularity_spec.get("kind")
     if granularity not in {"PANEL", "TILE"}:
         raise ValueError("prefetch-gemm-rhs requires PANEL or TILE granularity")
 
@@ -56,7 +57,29 @@ def resolve(
     if any("\t" in value or "\n" in value for value in (decision_name, object_id)):
         raise ValueError("decision_id and object_id cannot contain tabs or newlines")
 
-    return distance_value, LOCALITY_BY_CACHE[target_cache], decision_name, object_id
+    cache_line_bytes = plan.get("hardware_profile", {}).get("cache_line_bytes")
+    if (
+        isinstance(cache_line_bytes, bool)
+        or not isinstance(cache_line_bytes, int)
+        or cache_line_bytes <= 0
+    ):
+        raise ValueError("hardware_profile.cache_line_bytes must be a positive integer")
+    coverage_bytes = granularity_spec.get("bytes")
+    if coverage_bytes is None:
+        coverage_lines = 1
+    elif isinstance(coverage_bytes, bool) or not isinstance(coverage_bytes, int) or coverage_bytes <= 0:
+        raise ValueError("granularity.bytes must be a positive integer")
+    else:
+        coverage_lines = (coverage_bytes + cache_line_bytes - 1) // cache_line_bytes
+
+    return (
+        distance_value,
+        LOCALITY_BY_CACHE[target_cache],
+        coverage_lines,
+        cache_line_bytes,
+        decision_name,
+        object_id,
+    )
 
 
 def main() -> int:

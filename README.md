@@ -111,6 +111,10 @@ bash prefetch_plugin/onsite_split_replay.sh \
 具体阶段及对应日志。`mlir-opt` 只负责运行项目插件，`tptr-to-llvm`、ArmSME
 和 Transform schedule 始终由 `triton-shared-opt` 执行。
 
+RHS策略现支持distance、L1/L2层级、连续cache-line覆盖数和K循环发射频率。
+例如 `gemm-rhs 4 2 2 2 64` 表示每两个K迭代，为提前4次迭代的RHS地址发出
+两条连续64字节的L2预取。
+
 插件必须在现场使用与 `triton-shared-opt` ABI 匹配的 LLVM/MLIR 重新编译，
 不能复制其他机器上预编译的 `.so`。
 

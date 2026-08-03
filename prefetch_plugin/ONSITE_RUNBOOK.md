@@ -123,6 +123,16 @@ bash prefetch_plugin/onsite_split_replay.sh \
   gemm-rhs 4 3
 ```
 
+完整策略参数顺序为：
+
+```text
+gemm-rhs <distance> <locality> <coverage-lines> <issue-every> <cache-line-bytes>
+```
+
+例如 `gemm-rhs 4 2 2 2 64` 表示每两个K迭代，向前4个K迭代，为连续两条
+64字节cache line发出L2 keep预取。公开bf16 GEMM上该配置产生8条静态
+`PLDL2KEEP`，同时保留16条`FMOPA`。
+
 这条路径仍然使用现场原有 lowering，但把插件执行隔离到 LLVM 自带的
 `mlir-opt`：
 

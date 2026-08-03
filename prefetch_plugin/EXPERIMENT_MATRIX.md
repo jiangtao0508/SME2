@@ -11,16 +11,30 @@
 | rhs-d4 | 4 | 3 | packed RHS | 正确性、PRFM |
 | rhs-d8 | 8 | 3 | packed RHS | 正确性、PRFM |
 
-生成不同距离的 Stage 1 产物：
+生成不同距离的 split replay 产物：
 
 ```bash
 for distance in 1 2 4 8; do
-  bash prefetch_plugin/onsite_stage1.sh \
+  bash prefetch_plugin/onsite_split_replay.sh \
     "$LLVM_INSTALL_DIR" \
     "$TRITON_SHARED_OPT" \
     /absolute/path/to/00_input.mlir \
     "/absolute/path/to/results/d-$distance" \
-    "$distance" 3
+    gemm-rhs "$distance" 3 1 1 64
+done
+```
+
+确定一个可用distance后，固定distance和层级，再扫描覆盖范围与频率：
+
+```bash
+for coverage in 1 2 4; do
+  for issue_every in 1 2; do
+    bash prefetch_plugin/onsite_split_replay.sh \
+      "$LLVM_INSTALL_DIR" "$TRITON_SHARED_OPT" \
+      /absolute/path/to/00_input.mlir \
+      "/absolute/path/to/results/c-$coverage-e-$issue_every" \
+      gemm-rhs 4 3 "$coverage" "$issue_every" 64
+  done
 done
 ```
 
@@ -37,7 +51,7 @@ done
 | CPU 型号、SVL、频率策略 | |
 | 线程数、绑核 | |
 | tile/autotune 配置 | |
-| variant、distance、locality | |
+| variant、distance、locality、coverage、issue_every | |
 | LLIR SHA-256 | |
 | object SHA-256 | |
 | PRFM/FMOPA 数量 | |
@@ -56,4 +70,4 @@ done
 - warmup 不计入结果；
 - 至少记录 median 和 p25/p75；
 - 负收益和无收益也保留，不只保留最佳结果；
-- 第一轮只预取 RHS panel 的一个地址，后续才扩展 cache-line 数量和 A panel。
+- coverage扫描仍只针对RHS；完成后再决定是否扩展A panel。

@@ -17,8 +17,7 @@ using namespace mlir;
 namespace {
 
 struct PrefetchSnapshotPass
-    : public PassWrapper<PrefetchSnapshotPass,
-                         OperationPass<func::FuncOp>> {
+    : public PassWrapper<PrefetchSnapshotPass, OperationPass<func::FuncOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(PrefetchSnapshotPass)
 
   PrefetchSnapshotPass() = default;
@@ -43,9 +42,8 @@ struct PrefetchSnapshotPass
     std::error_code error;
     llvm::raw_fd_ostream output(outputPath, error, llvm::sys::fs::OF_Text);
     if (error) {
-      getOperation().emitError()
-          << "cannot open snapshot output '" << outputPath
-          << "': " << error.message();
+      getOperation().emitError() << "cannot open snapshot output '"
+                                 << outputPath << "': " << error.message();
       return signalPassFailure();
     }
 
@@ -56,8 +54,7 @@ struct PrefetchSnapshotPass
 };
 
 struct PrefetchMaterializePass
-    : public PassWrapper<PrefetchMaterializePass,
-                         OperationPass<func::FuncOp>> {
+    : public PassWrapper<PrefetchMaterializePass, OperationPass<func::FuncOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(PrefetchMaterializePass)
 
   PrefetchMaterializePass() = default;
@@ -83,8 +80,8 @@ struct PrefetchMaterializePass
   }
 
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<arith::ArithDialect, memref::MemRefDialect,
-                    scf::SCFDialect>();
+    registry
+        .insert<arith::ArithDialect, memref::MemRefDialect, scf::SCFDialect>();
   }
 
   void runOnOperation() override {
@@ -146,8 +143,7 @@ struct PrefetchMaterializePass
     }
 
     builder.create<scf::IfOp>(
-        loc, inBounds,
-        [&](OpBuilder &nestedBuilder, Location nestedLoc) {
+        loc, inBounds, [&](OpBuilder &nestedBuilder, Location nestedLoc) {
           nestedBuilder.create<memref::PrefetchOp>(
               nestedLoc, target, futureIndices, /*isWrite=*/false,
               static_cast<uint32_t>(locality), /*isDataCache=*/true);
@@ -157,8 +153,7 @@ struct PrefetchMaterializePass
 };
 
 struct PrefetchGemmRhsPass
-    : public PassWrapper<PrefetchGemmRhsPass,
-                         OperationPass<func::FuncOp>> {
+    : public PassWrapper<PrefetchGemmRhsPass, OperationPass<func::FuncOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(PrefetchGemmRhsPass)
 
   PrefetchGemmRhsPass() = default;
@@ -172,6 +167,20 @@ struct PrefetchGemmRhsPass
       *this, "locality",
       llvm::cl::desc("LLVM/MLIR locality hint in the range 0..3"),
       llvm::cl::init(3)};
+  Option<unsigned> coverageLines{
+      *this, "coverage-lines",
+      llvm::cl::desc(
+          "Number of consecutive cache lines to prefetch from the RHS panel"),
+      llvm::cl::init(1)};
+  Option<unsigned> issueEvery{
+      *this, "issue-every",
+      llvm::cl::desc("Issue prefetches every N K-loop iterations"),
+      llvm::cl::init(1)};
+  Option<unsigned> cacheLineBytes{
+      *this, "cache-line-bytes",
+      llvm::cl::desc(
+          "Cache-line size used to space consecutive RHS prefetches"),
+      llvm::cl::init(64)};
 
   StringRef getArgument() const final { return "prefetch-gemm-rhs"; }
   StringRef getDescription() const final {
@@ -179,8 +188,8 @@ struct PrefetchGemmRhsPass
   }
 
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<arith::ArithDialect, memref::MemRefDialect,
-                    scf::SCFDialect>();
+    registry
+        .insert<arith::ArithDialect, memref::MemRefDialect, scf::SCFDialect>();
   }
 
   void runOnOperation() override {
@@ -193,11 +202,24 @@ struct PrefetchGemmRhsPass
       function.emitError("prefetch locality must be in the range 0..3");
       return signalPassFailure();
     }
+    if (coverageLines == 0) {
+      function.emitError("prefetch coverage-lines must be positive");
+      return signalPassFailure();
+    }
+    if (issueEvery == 0) {
+      function.emitError("prefetch issue-every must be positive");
+      return signalPassFailure();
+    }
+    if (cacheLineBytes == 0) {
+      function.emitError("prefetch cache-line-bytes must be positive");
+      return signalPassFailure();
+    }
 
     struct Candidate {
       scf::ForOp loop;
       memref::SubViewOp subview;
       int64_t panelColumns;
+      int64_t elementsPerCacheLine;
     };
     SmallVector<Candidate> candidates;
 
@@ -220,8 +242,8 @@ struct PrefetchGemmRhsPass
         if (reductionOffset != loop.getInductionVar() || !columnOffset)
           continue;
 
-        bool feedsVectorRead = llvm::any_of(
-            subview->getUsers(), [](Operation *user) {
+        bool feedsVectorRead =
+            llvm::any_of(subview->getUsers(), [](Operation *user) {
               return user->getName().getStringRef() == "vector.transfer_read";
             });
         if (!feedsVectorRead)
@@ -230,8 +252,20 @@ struct PrefetchGemmRhsPass
         int64_t columns = sourceType.getShape()[1];
         if (ShapedType::isDynamic(columns))
           continue;
+        Type elementType = sourceType.getElementType();
+        unsigned bitWidth = 0;
+        if (auto floatType = dyn_cast<FloatType>(elementType))
+          bitWidth = floatType.getWidth();
+        else if (auto integerType = dyn_cast<IntegerType>(elementType))
+          bitWidth = integerType.getWidth();
+        if (bitWidth == 0 || bitWidth % 8 != 0)
+          continue;
+        int64_t elementBytes = bitWidth / 8;
+        if (cacheLineBytes % elementBytes != 0)
+          continue;
+        int64_t elementsPerCacheLine = cacheLineBytes / elementBytes;
         if (!best.subview || columns > best.panelColumns)
-          best = {loop, subview, columns};
+          best = {loop, subview, columns, elementsPerCacheLine};
       }
       if (best.subview)
         candidates.push_back(best);
@@ -248,26 +282,53 @@ struct PrefetchGemmRhsPass
       Location loc = candidate.subview.getLoc();
       Value distanceValue =
           builder.create<arith::ConstantIndexOp>(loc, distance);
-      Value delta = builder.create<arith::MulIOp>(
-          loc, candidate.loop.getStep(), distanceValue);
+      Value delta = builder.create<arith::MulIOp>(loc, candidate.loop.getStep(),
+                                                  distanceValue);
       Value future = builder.create<arith::AddIOp>(
           loc, candidate.loop.getInductionVar(), delta);
-      Value inBounds = builder.create<arith::CmpIOp>(
-          loc, arith::CmpIPredicate::ult, future,
-          candidate.loop.getUpperBound());
-      Value column =
-          candidate.subview.getMixedOffsets()[1].dyn_cast<Value>();
+      Value inBounds =
+          builder.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ult, future,
+                                        candidate.loop.getUpperBound());
+      Value shouldIssue = inBounds;
+      if (issueEvery > 1) {
+        Value elapsed =
+            builder.create<arith::SubIOp>(loc, candidate.loop.getInductionVar(),
+                                          candidate.loop.getLowerBound());
+        Value ordinal = builder.create<arith::DivUIOp>(
+            loc, elapsed, candidate.loop.getStep());
+        Value frequency =
+            builder.create<arith::ConstantIndexOp>(loc, issueEvery);
+        Value remainder =
+            builder.create<arith::RemUIOp>(loc, ordinal, frequency);
+        Value zero = builder.create<arith::ConstantIndexOp>(loc, 0);
+        Value onFrequency = builder.create<arith::CmpIOp>(
+            loc, arith::CmpIPredicate::eq, remainder, zero);
+        shouldIssue = builder.create<arith::AndIOp>(loc, inBounds, onFrequency);
+      }
+      Value column = candidate.subview.getMixedOffsets()[1].dyn_cast<Value>();
       Value source = candidate.subview.getSource();
+      Value columnLimit =
+          builder.create<arith::ConstantIndexOp>(loc, candidate.panelColumns);
 
-      builder.create<scf::IfOp>(
-          loc, inBounds,
-          [&](OpBuilder &nestedBuilder, Location nestedLoc) {
-            nestedBuilder.create<memref::PrefetchOp>(
-                nestedLoc, source, ValueRange{future, column},
-                /*isWrite=*/false, static_cast<uint32_t>(locality),
-                /*isDataCache=*/true);
-            nestedBuilder.create<scf::YieldOp>(nestedLoc);
-          });
+      for (unsigned line = 0; line < coverageLines; ++line) {
+        Value columnDelta = builder.create<arith::ConstantIndexOp>(
+            loc, line * candidate.elementsPerCacheLine);
+        Value futureColumn =
+            builder.create<arith::AddIOp>(loc, column, columnDelta);
+        Value columnInBounds = builder.create<arith::CmpIOp>(
+            loc, arith::CmpIPredicate::ult, futureColumn, columnLimit);
+        Value lineCondition =
+            builder.create<arith::AndIOp>(loc, shouldIssue, columnInBounds);
+        builder.create<scf::IfOp>(
+            loc, lineCondition,
+            [&](OpBuilder &nestedBuilder, Location nestedLoc) {
+              nestedBuilder.create<memref::PrefetchOp>(
+                  nestedLoc, source, ValueRange{future, futureColumn},
+                  /*isWrite=*/false, static_cast<uint32_t>(locality),
+                  /*isDataCache=*/true);
+              nestedBuilder.create<scf::YieldOp>(nestedLoc);
+            });
+      }
     }
   }
 };

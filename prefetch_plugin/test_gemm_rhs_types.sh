@@ -57,3 +57,38 @@ for distance in 1 2 4 8; do
   done
 done
 echo "PASS: distance/locality matrix covered distances 1,2,4,8 and localities 0,1,2,3"
+
+for coverage_lines in 1 2 4; do
+  for issue_every in 1 2; do
+    OUTPUT="$BUILD_DIR/gemm_rhs_f32.c${coverage_lines}.e${issue_every}.mlir"
+    "$LLVM_INSTALL_DIR/bin/mlir-opt" \
+      --load-pass-plugin="$PLUGIN_LIBRARY" \
+      --pass-pipeline="builtin.module(builtin.module(func.func(prefetch-gemm-rhs{distance=4 locality=2 coverage-lines=$coverage_lines issue-every=$issue_every cache-line-bytes=64})))" \
+      "$BUILD_DIR/gemm_rhs_f32.mlir" \
+      -o "$OUTPUT"
+    COUNT="$(grep -c 'memref.prefetch' "$OUTPUT" || true)"
+    if [[ "$COUNT" -ne "$coverage_lines" ]]; then
+      echo "expected $coverage_lines prefetches, found $COUNT" >&2
+      exit 1
+    fi
+    if [[ "$issue_every" -eq 2 ]]; then
+      grep -q 'arith.remui' "$OUTPUT"
+    fi
+  done
+done
+echo "PASS: coverage/frequency matrix covered lines 1,2,4 and issue-every 1,2"
+
+for invalid_options in \
+  'coverage-lines=0 issue-every=1 cache-line-bytes=64' \
+  'coverage-lines=1 issue-every=0 cache-line-bytes=64' \
+  'coverage-lines=1 issue-every=1 cache-line-bytes=3'; do
+  if "$LLVM_INSTALL_DIR/bin/mlir-opt" \
+    --load-pass-plugin="$PLUGIN_LIBRARY" \
+    --pass-pipeline="builtin.module(builtin.module(func.func(prefetch-gemm-rhs{distance=4 locality=2 $invalid_options})))" \
+    "$BUILD_DIR/gemm_rhs_f32.mlir" \
+    -o /dev/null >/dev/null 2>&1; then
+    echo "expected invalid strategy options to fail: $invalid_options" >&2
+    exit 1
+  fi
+done
+echo "PASS: invalid coverage, frequency, and cache-line configurations were rejected"
