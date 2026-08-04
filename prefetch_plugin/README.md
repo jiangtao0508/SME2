@@ -49,6 +49,33 @@ compilation outside the timed region, verifies the prefetch override message,
 and reports both latencies and their ratio. Source the onsite `env.sh` first.
 The defaults and optional `SME_BENCH_*` controls are listed by `--help`.
 
+To generate and benchmark the initial seven-strategy search matrix, use:
+
+```bash
+bash prefetch_plugin/onsite_generate_matrix.sh \
+  "$LLVM_INSTALL_DIR" "$TRITON_SHARED_OPT" "$COMPILER_PY" \
+  "$INPUT_00" "$MATRIX_OUT" "$SME_OVERRIDE"
+
+bash prefetch_plugin/onsite_benchmark_matrix.sh "$MATRIX_OUT"
+```
+
+The matrix scans L1 distances 1/2/4/8, reduced issue frequency at distances
+4/8, and an L2 reduced-frequency variant. It reuses the already verified
+override hash/name, checks PRFM/FMOPA for every generated object, alternates
+benchmark order, and prints a ranked summary.
+
+When `TRITON_SHARED_FORCE_SME_PIPELINE=1`, Triton-Shared warns if any compiled
+payload lacks textual `linalg.matmul`/`linalg.batch_matmul` before scheduling:
+
+```text
+Running SME pipeline on payload without matmul.
+```
+
+One such warning can come from an auxiliary payload and does not by itself
+invalidate the BMM result. The target BMM remains gated by object-level FMOPA,
+an actual LLIR override hit, and numerical correctness. A comparison is not
+accepted if the target baseline itself has no FMOPA.
+
 ## Build
 
 ```bash

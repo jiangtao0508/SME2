@@ -104,7 +104,9 @@ if [[ "$MODE" == "roundtrip" ]]; then
   exit 0
 fi
 
-bash "$PLUGIN_DIR/build_and_smoke_mlir_opt.sh" "$LLVM_INSTALL_DIR"
+if [[ ${SME_SKIP_PLUGIN_BUILD:-0} != 1 ]]; then
+  bash "$PLUGIN_DIR/build_and_smoke_mlir_opt.sh" "$LLVM_INSTALL_DIR"
+fi
 
 PLUGIN_LIBRARY=""
 for candidate in \
