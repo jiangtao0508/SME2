@@ -84,7 +84,10 @@ def make_resume(original: str, payload: str) -> str:
     schedule_start = find_unique(
         original_lines, SCHEDULE_MARKER, 0, len(original_lines)
     )
-    schedule_lines = original_lines[schedule_start:]
+    schedule_end = find_block_end(
+        original_lines, schedule_start, "transform schedule module"
+    )
+    schedule_lines = original_lines[schedule_start : schedule_end + 1]
     main_start, main_end = locate_main(schedule_lines)
     sme = find_unique(schedule_lines, SME_INCLUDE, main_start, main_end)
 
@@ -111,8 +114,46 @@ def make_resume(original: str, payload: str) -> str:
         f"-> !transform.any_op\n",
     ]
     schedule_lines[main_start + 1 : sme] = resume_prefix
-    schedule = "".join(schedule_lines)
-    return normalize_location_spacing(payload.rstrip() + "\n" + schedule)
+
+    payload_lines = payload.splitlines(keepends=True)
+    payload_schedule_start = find_unique(
+        payload_lines, SCHEDULE_MARKER, 0, len(payload_lines)
+    )
+    payload_schedule_end = find_block_end(
+        payload_lines, payload_schedule_start, "empty payload transform schedule"
+    )
+
+    source_indent = re.match(r"^(\s*)", schedule_lines[0]).group(1)
+    target_indent = re.match(
+        r"^(\s*)", payload_lines[payload_schedule_start]
+    ).group(1)
+    reindented_schedule = []
+    for line in schedule_lines:
+        if line.startswith(source_indent):
+            line = line[len(source_indent) :]
+        reindented_schedule.append(target_indent + line)
+    payload_lines[payload_schedule_start : payload_schedule_end + 1] = (
+        reindented_schedule
+    )
+
+    location_aliases = [
+        line
+        for line in original_lines
+        if re.match(r"^\s*#loc[-\w.$]*\s*=\s*loc\(", line)
+    ]
+    result = "".join(payload_lines)
+    if location_aliases:
+        existing_aliases = set(
+            re.findall(r"^\s*(#loc[-\w.$]*)\s*=", result, flags=re.MULTILINE)
+        )
+        missing_aliases = [
+            line
+            for line in location_aliases
+            if re.match(r"^\s*(#loc[-\w.$]*)\s*=", line).group(1)
+            not in existing_aliases
+        ]
+        result = "".join(missing_aliases) + result
+    return normalize_location_spacing(result)
 
 
 def main() -> int:
