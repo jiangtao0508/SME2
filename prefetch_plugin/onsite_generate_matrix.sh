@@ -7,9 +7,9 @@ Usage:
   onsite_generate_matrix.sh LLVM_PREFIX TRITON_SHARED_OPT COMPILER_PY \
     INPUT_00_MLIR OUTPUT_DIR OVERRIDE_TEMPLATE_DIR
 
-Builds seven prefetch variants, lowers every variant to LLIR/object code, and
-creates a correctly named override tree by copying the relative hash/name from
-OVERRIDE_TEMPLATE_DIR. OUTPUT_DIR must not already exist.
+Builds a no-prefetch control plus seven prefetch variants, lowers them to
+LLIR/object code, and creates correctly named override trees. Set
+SME_MATRIX_RESUME=1 to add missing entries to an existing matrix.
 EOF
 }
 
@@ -36,10 +36,6 @@ for required in "$triton_shared_opt" "$compiler_py" "$input_00"; do
     exit 2
   fi
 done
-if [[ -e $output_dir ]]; then
-  echo "ERROR: output directory already exists: $output_dir" >&2
-  exit 2
-fi
 if [[ $output_dir == *" "* ]]; then
   echo "ERROR: output directory must not contain spaces" >&2
   exit 2
@@ -57,14 +53,52 @@ if [[ $override_relative == "$template_llir" ]]; then
   exit 2
 fi
 
+resume=${SME_MATRIX_RESUME:-0}
+if [[ $resume != 0 && $resume != 1 ]]; then
+  echo "ERROR: SME_MATRIX_RESUME must be 0 or 1" >&2
+  exit 2
+fi
+if [[ -e $output_dir && $resume -ne 1 ]]; then
+  echo "ERROR: output directory already exists (use SME_MATRIX_RESUME=1): $output_dir" >&2
+  exit 2
+fi
 mkdir -p "$output_dir"
 output_dir=$(cd "$output_dir" && pwd -P)
 manifest="$output_dir/matrix.tsv"
-printf 'variant\tdistance\tlocality\tcoverage_lines\tissue_every\tcache_line_bytes\tprfm\tfmopa\toverride_dir\n' > "$manifest"
+if [[ $resume -eq 1 ]]; then
+  if [[ ! -f $manifest ]]; then
+    echo "ERROR: cannot resume without matrix.tsv in $output_dir" >&2
+    exit 2
+  fi
+else
+  printf 'variant\tdistance\tlocality\tcoverage_lines\tissue_every\tcache_line_bytes\tprfm\tfmopa\toverride_dir\n' > "$manifest"
+fi
 
 echo "Building the plugin once..."
 bash "$script_dir/build_and_smoke_mlir_opt.sh" "$llvm_prefix"
 export SME_SKIP_PLUGIN_BUILD=1
+
+if grep -q $'^control_roundtrip\t' "$manifest"; then
+  echo "=== Reusing control_roundtrip ==="
+else
+  echo "=== Generating no-prefetch split/replay control ==="
+  control_dir="$output_dir/control_roundtrip"
+  control_stage1="$control_dir/stage1"
+  control_final="$control_dir/final"
+  control_override="$control_dir/override"
+  bash "$script_dir/onsite_split_replay.sh" \
+    "$llvm_prefix" "$triton_shared_opt" "$input_00" "$control_stage1" roundtrip
+  SME_EXPECT_PREFETCH=0 bash "$script_dir/onsite_stage2.sh" \
+    "$llvm_prefix" "$triton_shared_opt" "$compiler_py" \
+    "$control_stage1/01_roundtrip_no_prefetch.mlir" "$control_final"
+  control_prfm=$(grep -c 'prfm' "$control_final/kernel.disasm" || true)
+  control_fmopa=$(grep -c 'fmopa' "$control_final/kernel.disasm" || true)
+  mkdir -p "$control_override/$(dirname "$override_relative")"
+  cp "$control_final/kernel.llir" "$control_override/$override_relative"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    control_roundtrip 0 0 0 0 64 "$control_prfm" "$control_fmopa" \
+    "$control_override" >> "$manifest"
+fi
 
 variants=(
   'd1_l1_e1 1 3 1 1 64'
@@ -78,6 +112,10 @@ variants=(
 
 for spec in "${variants[@]}"; do
   read -r variant distance locality coverage issue_every line_bytes <<< "$spec"
+  if grep -q "^${variant}"$'\t' "$manifest"; then
+    echo "=== Reusing $variant ==="
+    continue
+  fi
   variant_dir="$output_dir/$variant"
   stage1_dir="$variant_dir/stage1"
   final_dir="$variant_dir/final"

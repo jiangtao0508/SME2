@@ -138,6 +138,10 @@ else
   run_case baseline "$run_root/baseline.log"
 fi
 
+if grep -Fq 'Overriding kernel with file' "$run_root/baseline.log"; then
+  echo "ERROR: native baseline unexpectedly loaded an LLIR override" >&2
+  exit 1
+fi
 if ! grep -Fq 'Overriding kernel with file' "$run_root/prefetch.log"; then
   echo "ERROR: prefetch run did not report a Triton LLIR override; results are invalid" >&2
   exit 1
@@ -160,6 +164,7 @@ speedup = baseline / prefetch
 change = (prefetch / baseline - 1.0) * 100.0
 
 print("RESULT_OVERRIDE_HIT=1")
+print("RESULT_BASELINE_OVERRIDE_HIT=0")
 print(f"RESULT_BASELINE_MS={baseline:.6f}")
 print(f"RESULT_PREFETCH_MS={prefetch:.6f}")
 print(f"RESULT_SPEEDUP={speedup:.6f}x")

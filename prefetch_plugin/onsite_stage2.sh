@@ -60,14 +60,27 @@ python3 "$PROJECT_DIR/reproduction/extract_public_llvm_function.py" \
 
 PREFETCH_COUNT="$(grep -c 'prfm' "$OUTPUT_DIR/kernel.disasm" || true)"
 MOPA_COUNT="$(grep -c 'fmopa' "$OUTPUT_DIR/kernel.disasm" || true)"
+EXPECT_PREFETCH="${SME_EXPECT_PREFETCH:-1}"
 
-if [[ "$PREFETCH_COUNT" -eq 0 || "$MOPA_COUNT" -eq 0 ]]; then
-  echo "expected both PRFM and FMOPA in the generated object" >&2
+if [[ "$EXPECT_PREFETCH" != 0 && "$EXPECT_PREFETCH" != 1 ]]; then
+  echo "SME_EXPECT_PREFETCH must be 0 or 1" >&2
+  exit 2
+fi
+if [[ "$MOPA_COUNT" -eq 0 ]]; then
+  echo "expected FMOPA in the generated object" >&2
   echo "PRFM=$PREFETCH_COUNT FMOPA=$MOPA_COUNT" >&2
   exit 1
 fi
+if [[ "$EXPECT_PREFETCH" -eq 1 && "$PREFETCH_COUNT" -eq 0 ]]; then
+  echo "expected PRFM in the generated object" >&2
+  exit 1
+fi
+if [[ "$EXPECT_PREFETCH" -eq 0 && "$PREFETCH_COUNT" -ne 0 ]]; then
+  echo "no-prefetch control unexpectedly contains PRFM=$PREFETCH_COUNT" >&2
+  exit 1
+fi
 
-echo "PASS: object contains PRFM=$PREFETCH_COUNT and FMOPA=$MOPA_COUNT"
+echo "PASS: object contains expected PRFM=$PREFETCH_COUNT and FMOPA=$MOPA_COUNT"
 echo "LLIR override candidate: $OUTPUT_DIR/kernel.llir"
 echo "object: $OUTPUT_DIR/kernel.o"
 echo "disassembly: $OUTPUT_DIR/kernel.disasm"
