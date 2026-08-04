@@ -34,6 +34,21 @@ prefetch-gemm-rhs
 -> AArch64 PRFM
 ```
 
+## One-command onsite BMM benchmark
+
+After the generated LLIR passes the correctness override test, compare the
+original and prefetch kernels without depending on FlagGems benchmark pytest
+options:
+
+```bash
+bash prefetch_plugin/onsite_benchmark.sh "$SME_OVERRIDE"
+```
+
+The script can run from any directory. It uses `triton.testing.do_bench`, keeps
+compilation outside the timed region, verifies the prefetch override message,
+and reports both latencies and their ratio. Source the onsite `env.sh` first.
+The defaults and optional `SME_BENCH_*` controls are listed by `--help`.
+
 ## Build
 
 ```bash
