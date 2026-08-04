@@ -19,6 +19,7 @@ Defaults:
 Optional environment variables:
   SME_BENCH_BATCH, SME_BENCH_M, SME_BENCH_N, SME_BENCH_K
   SME_BENCH_DTYPE, SME_BENCH_WARMUP, SME_BENCH_REP
+  SME_BENCH_ORDER=baseline-first (default) or prefetch-first
 EOF
 }
 
@@ -61,6 +62,12 @@ export SME_BENCH_K=${SME_BENCH_K:-2048}
 export SME_BENCH_DTYPE=${SME_BENCH_DTYPE:-bfloat16}
 export SME_BENCH_WARMUP=${SME_BENCH_WARMUP:-5}
 export SME_BENCH_REP=${SME_BENCH_REP:-20}
+export SME_BENCH_ORDER=${SME_BENCH_ORDER:-baseline-first}
+
+if [[ $SME_BENCH_ORDER != baseline-first && $SME_BENCH_ORDER != prefetch-first ]]; then
+  echo "ERROR: SME_BENCH_ORDER must be baseline-first or prefetch-first" >&2
+  exit 2
+fi
 
 run_root=$(mktemp -d "${TMPDIR:-/tmp}/sme-prefetch-bench.XXXXXX")
 trap 'rm -rf -- "$run_root"' EXIT
@@ -118,11 +125,18 @@ PY
 }
 
 echo "SME benchmark: B=$SME_BENCH_BATCH M=$SME_BENCH_M N=$SME_BENCH_N K=$SME_BENCH_K dtype=$SME_BENCH_DTYPE"
-echo "Running baseline..."
-run_case baseline "$run_root/baseline.log"
-
-echo "Running prefetch override..."
-run_case prefetch "$run_root/prefetch.log"
+echo "Run order: $SME_BENCH_ORDER"
+if [[ $SME_BENCH_ORDER == baseline-first ]]; then
+  echo "Running baseline..."
+  run_case baseline "$run_root/baseline.log"
+  echo "Running prefetch override..."
+  run_case prefetch "$run_root/prefetch.log"
+else
+  echo "Running prefetch override..."
+  run_case prefetch "$run_root/prefetch.log"
+  echo "Running baseline..."
+  run_case baseline "$run_root/baseline.log"
+fi
 
 if ! grep -Fq 'Overriding kernel with file' "$run_root/prefetch.log"; then
   echo "ERROR: prefetch run did not report a Triton LLIR override; results are invalid" >&2
