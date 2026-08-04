@@ -70,6 +70,13 @@ def add_tptr_preload(payload: str) -> str:
     raise ValueError("could not find a func.func body for tptr preload")
 
 
+def normalize_location_spacing(text: str) -> str:
+    """Restore required whitespace before MLIR location suffixes."""
+    for boundary in ("}", ")", "]"):
+        text = text.replace(f"{boundary}loc(", f"{boundary} loc(")
+    return text
+
+
 def make_resume(original: str, payload: str) -> str:
     payload = add_tptr_preload(payload)
 
@@ -105,7 +112,7 @@ def make_resume(original: str, payload: str) -> str:
     ]
     schedule_lines[main_start + 1 : sme] = resume_prefix
     schedule = "".join(schedule_lines)
-    return payload.rstrip() + "\n" + schedule
+    return normalize_location_spacing(payload.rstrip() + "\n" + schedule)
 
 
 def main() -> int:
