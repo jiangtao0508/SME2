@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Packed GEMM RHS Kernel Profile 1.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "source_stage", "matcher", "candidate_count", "candidates"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "source_stage": {"const": "bufferized_before_sme"},
+    "matcher": {"type": "string", "minLength": 1},
+    "candidate_count": {"type": "integer", "minimum": 1},
+    "candidates": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "candidate_id", "source_rows", "source_columns", "element_bits",
+          "element_bytes", "source_allocation_bytes", "rhs_row_bytes", "vector_read_bytes", "loop_lower",
+          "loop_upper", "loop_step", "loop_trip_count",
+          "subview_reduction_extent", "subview_column_extent",
+          "bytes_advanced_per_loop_iteration"
+        ],
+        "properties": {
+          "candidate_id": {"type": "integer", "minimum": 0},
+          "source_rows": {"type": "integer", "minimum": 1},
+          "source_columns": {"type": "integer", "minimum": 1},
+          "element_bits": {"type": "integer", "minimum": 8},
+          "element_bytes": {"type": "integer", "minimum": 1},
+          "source_allocation_bytes": {"type": "integer", "minimum": 1},
+          "rhs_row_bytes": {"type": "integer", "minimum": 1},
+          "vector_read_bytes": {"type": "integer", "minimum": 1},
+          "loop_lower": {"type": ["integer", "null"]},
+          "loop_upper": {"type": ["integer", "null"]},
+          "loop_step": {"type": ["integer", "null"], "minimum": 1},
+          "loop_trip_count": {"type": ["integer", "null"], "minimum": 1},
+          "subview_reduction_extent": {"type": ["integer", "null"], "minimum": 1},
+          "subview_column_extent": {"type": ["integer", "null"], "minimum": 1},
+          "bytes_advanced_per_loop_iteration": {"type": ["integer", "null"], "minimum": 1}
+        }
+      }
+    }
+  }
+}

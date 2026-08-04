@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Formula-driven packed GEMM RHS PrefetchPlan 1.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "plan_id", "generated_utc", "hardware_profile",
+    "kernel_profile", "model_config", "decisions", "diagnostics"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.1"},
+    "plan_id": {"type": "string", "minLength": 1},
+    "generated_utc": {"type": "string", "minLength": 1},
+    "hardware_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile_id", "cache_line_bytes", "source"],
+      "properties": {
+        "profile_id": {"type": "string", "minLength": 1},
+        "cache_line_bytes": {"type": "integer", "minimum": 1},
+        "source": {"const": "measured"}
+      }
+    },
+    "kernel_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "candidate_id"],
+      "properties": {
+        "schema_version": {"const": "1.0"},
+        "candidate_id": {"type": "integer", "minimum": 0}
+      }
+    },
+    "model_config": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["overhead_fraction", "bandwidth_fraction", "no_parameter_search"],
+      "properties": {
+        "overhead_fraction": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+        "bandwidth_fraction": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+        "no_parameter_search": {"const": true}
+      }
+    },
+    "decisions": {"type": "array", "maxItems": 1, "items": {"$ref": "#/$defs/decision"}},
+    "diagnostics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rejection", "warnings"],
+      "properties": {
+        "rejection": {"type": ["string", "null"]},
+        "warnings": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  },
+  "$defs": {
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision_id", "object_id", "strategy", "distance", "target_cache",
+        "granularity", "emission", "model", "reasons"
+      ],
+      "properties": {
+        "decision_id": {"type": "string", "minLength": 1},
+        "object_id": {"const": "packed_rhs_panel"},
+        "strategy": {"const": "TILE_PREFETCH"},
+        "distance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["value", "unit", "anchor_loop"],
+          "properties": {
+            "value": {"type": "integer", "minimum": 1},
+            "unit": {"const": "ITERATION"},
+            "anchor_loop": {"const": "k_loop"}
+          }
+        },
+        "target_cache": {"enum": ["L1", "L2"]},
+        "granularity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "bytes"],
+          "properties": {
+            "kind": {"enum": ["PANEL", "TILE"]},
+            "bytes": {"type": "integer", "minimum": 1}
+          }
+        },
+        "emission": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["issue_every", "coverage_lines"],
+          "properties": {
+            "issue_every": {"type": "integer", "minimum": 1},
+            "coverage_lines": {"type": "integer", "minimum": 1}
+          }
+        },
+        "model": {"type": "object", "additionalProperties": true},
+        "reasons": {"type": "array", "minItems": 1, "items": {"type": "string"}}
+      }
+    }
+  }
+}

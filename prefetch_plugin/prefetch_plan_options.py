@@ -15,9 +15,9 @@ LOCALITY_BY_CACHE = {"L1": 3, "L2": 2}
 
 def resolve(
     plan: dict, decision_id: Optional[str] = None
-) -> Tuple[int, int, int, int, str, str]:
-    if plan.get("schema_version") != "1.0":
-        raise ValueError("expected PrefetchPlan schema_version 1.0")
+) -> Tuple[int, int, int, int, int, str, str]:
+    if plan.get("schema_version") not in {"1.0", "1.1"}:
+        raise ValueError("expected PrefetchPlan schema_version 1.0 or 1.1")
     decisions = plan.get("decisions")
     if not isinstance(decisions, list) or not decisions:
         raise ValueError("plan has no enabled prefetch decisions")
@@ -72,10 +72,26 @@ def resolve(
     else:
         coverage_lines = (coverage_bytes + cache_line_bytes - 1) // cache_line_bytes
 
+    emission = decision.get("emission", {})
+    if emission is None:
+        emission = {}
+    if not isinstance(emission, dict):
+        raise ValueError("decision.emission must be an object")
+    issue_every = emission.get("issue_every", 1)
+    if isinstance(issue_every, bool) or not isinstance(issue_every, int) or issue_every <= 0:
+        raise ValueError("decision.emission.issue_every must be a positive integer")
+    declared_lines = emission.get("coverage_lines")
+    if declared_lines is not None:
+        if isinstance(declared_lines, bool) or not isinstance(declared_lines, int) or declared_lines <= 0:
+            raise ValueError("decision.emission.coverage_lines must be a positive integer")
+        if declared_lines != coverage_lines:
+            raise ValueError("emission.coverage_lines disagrees with granularity.bytes")
+
     return (
         distance_value,
         LOCALITY_BY_CACHE[target_cache],
         coverage_lines,
+        issue_every,
         cache_line_bytes,
         decision_name,
         object_id,

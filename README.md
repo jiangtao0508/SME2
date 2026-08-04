@@ -144,6 +144,31 @@ bash hardware_calibration/selftest.sh
 机器基本信息，不读取 Triton/FlagGems 源码、IR 或测试数据；是否可带离现场
 仍以对方的数据规则为准。
 
+## GEMM 数值特征与 Cost Model
+
+对 `bufferized_before_sme.mlir` 只读提取 K-loop 和 packed RHS 数值特征：
+
+```bash
+bash prefetch_plugin/onsite_extract_gemm_profile.sh \
+  /path/to/llvm-install \
+  /path/to/bufferized_before_sme.mlir \
+  /path/to/project-output/model
+```
+
+生成 `GemmKernelProfile.v1.json`，其中不包含 IR 文本、操作名、location 或地址。
+将它与实测硬件 Profile 交给公式型 Cost Model：
+
+```bash
+python3 cost_model/plan_gemm_rhs.py \
+  --hardware /path/to/HardwareProfile.v1.1.json \
+  --kernel /path/to/GemmKernelProfile.v1.json \
+  --anchor-step-ns <K-loop单步时间> \
+  --output /path/to/PrefetchPlan.v1.1.json
+```
+
+这一版不搜索候选矩阵；距离、覆盖 cache-line 和发射频率都由延迟、流量与成本
+约束直接推导。详见 [cost_model/README.md](cost_model/README.md)。
+
 ## 一屏查看现场结论
 
 不阅读长报告，自动选择最新一次追踪结果：

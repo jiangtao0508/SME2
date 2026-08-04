@@ -46,11 +46,22 @@
     "measurements": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["latency", "stride", "prefetch", "bandwidth"],
+      "required": ["latency", "stride", "prefetch", "bandwidth", "reported_system"],
       "properties": {
         "latency": {"$ref": "#/$defs/measurementPoints"},
         "stride": {"$ref": "#/$defs/measurementPoints"},
         "prefetch": {"$ref": "#/$defs/measurementPoints"},
+        "reported_system": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["cache_line_bytes", "l1_cache_bytes", "l2_cache_bytes", "l3_cache_bytes"],
+          "properties": {
+            "cache_line_bytes": {"type": ["integer", "null"], "minimum": 1},
+            "l1_cache_bytes": {"type": ["integer", "null"], "minimum": 1},
+            "l2_cache_bytes": {"type": ["integer", "null"], "minimum": 1},
+            "l3_cache_bytes": {"type": ["integer", "null"], "minimum": 1}
+          }
+        },
         "bandwidth": {
           "type": "object",
           "additionalProperties": false,

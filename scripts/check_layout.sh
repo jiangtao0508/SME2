@@ -23,6 +23,11 @@ required=(
   "prefetch_plugin/onsite_split_replay.sh"
   "prefetch_plugin/onsite_full_experiment.sh"
   "prefetch_plugin/prefetch_plan_options.py"
+  "prefetch_plugin/onsite_extract_gemm_profile.sh"
+  "prefetch_plugin/gemm-kernel-profile-v1.schema.json"
+  "hardware_calibration/run_calibration.sh"
+  "cost_model/plan_gemm_rhs.py"
+  "cost_model/prefetch-plan-v1.1.schema.json"
 )
 
 missing=0

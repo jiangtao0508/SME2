@@ -178,6 +178,7 @@ def parse_probe_output(text: str) -> Dict[str, object]:
     stride: Dict[int, float] = {}
     prefetch: Dict[int, float] = {}
     bandwidth: Optional[Dict[str, object]] = None
+    reported_system: Dict[str, int] = {}
     for line_number, line in enumerate(text.splitlines(), 1):
         fields = line.split("\t")
         try:
@@ -193,13 +194,23 @@ def parse_probe_output(text: str) -> Dict[str, object]:
                 stride[int(fields[1])] = float(fields[2])
             elif len(fields) == 3 and fields[0] == "prefetch":
                 prefetch[int(fields[1])] = float(fields[2])
+            elif len(fields) == 3 and fields[0] == "system" and fields[1] in {
+                "cache_line_bytes", "l1_cache_bytes", "l2_cache_bytes", "l3_cache_bytes"
+            }:
+                reported_system[fields[1]] = int(fields[2])
             elif line.strip():
                 raise ValueError("unknown record")
         except ValueError as error:
             raise ValueError(f"invalid probe output line {line_number}: {line!r}") from error
     if not latency or bandwidth is None or not stride or 0 not in prefetch:
         raise ValueError("probe output is incomplete")
-    return {"latency": latency, "bandwidth": bandwidth, "stride": stride, "prefetch": prefetch}
+    return {
+        "latency": latency,
+        "bandwidth": bandwidth,
+        "stride": stride,
+        "prefetch": prefetch,
+        "reported_system": reported_system,
+    }
 
 
 def aggregate_probe_runs(runs: Sequence[Mapping[str, object]]) -> Dict[str, object]:
@@ -224,6 +235,15 @@ def aggregate_probe_runs(runs: Sequence[Mapping[str, object]]) -> Dict[str, obje
 
     bandwidth_samples = [float(run["bandwidth"]["bytes_per_ns"]) for run in runs]  # type: ignore[index]
     first_bandwidth = runs[0]["bandwidth"]  # type: ignore[index]
+    reported_system = {}
+    for key in ("cache_line_bytes", "l1_cache_bytes", "l2_cache_bytes", "l3_cache_bytes"):
+        samples = [
+            int(run["reported_system"][key])
+            for run in runs
+            if isinstance(run.get("reported_system"), Mapping)
+            and isinstance(run["reported_system"].get(key), int)
+        ]
+        reported_system[key] = int(statistics.median(samples)) if samples else None
     return {
         "latency": aggregate_map("latency"),
         "stride": aggregate_map("stride"),
@@ -236,6 +256,7 @@ def aggregate_probe_runs(runs: Sequence[Mapping[str, object]]) -> Dict[str, obje
             "bytes_per_ns_maximum": max(bandwidth_samples),
             "samples": bandwidth_samples,
         },
+        "reported_system": reported_system,
     }
 
 
@@ -266,8 +287,11 @@ def derive_profile(
     latency_points = aggregated["latency"]  # type: ignore[assignment]
     stride_points = aggregated["stride"]  # type: ignore[assignment]
     prefetch_points = aggregated["prefetch"]  # type: ignore[assignment]
-    l1_bytes = select_cache(caches, 1)
-    l2_bytes = select_cache(caches, 2)
+    reported_system = aggregated.get("reported_system", {})
+    if not isinstance(reported_system, Mapping):
+        reported_system = {}
+    l1_bytes = select_cache(caches, 1) or reported_system.get("l1_cache_bytes")
+    l2_bytes = select_cache(caches, 2) or reported_system.get("l2_cache_bytes")
     largest_cache = max(
         (int(cache["size_bytes"]) for cache in caches if isinstance(cache.get("size_bytes"), int)),
         default=0,
@@ -326,7 +350,7 @@ def derive_profile(
     prefetch_cost_cycles = prefetch_cost_ns * frequency_ghz if frequency_ghz and prefetch_cost_ns else None
 
     return {
-        "cache_line_bytes": cache_line_bytes(caches),
+        "cache_line_bytes": cache_line_bytes(caches) or reported_system.get("cache_line_bytes"),
         "l1d_bytes": l1_bytes,
         "l2_bytes": l2_bytes,
         "l1_hit_latency_ns": l1_latency_ns,

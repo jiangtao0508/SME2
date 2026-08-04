@@ -1,3 +1,6 @@
+#if defined(__APPLE__)
+#define _DARWIN_C_SOURCE
+#endif
 #define _POSIX_C_SOURCE 200809L
 
 #include <errno.h>
@@ -7,8 +10,56 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
+
+#if defined(__APPLE__)
+#include <sys/sysctl.h>
+#endif
 
 static volatile uint64_t probe_sink;
+
+static size_t reported_cache_line_bytes(void) {
+#if defined(_SC_LEVEL1_DCACHE_LINESIZE)
+  long value = sysconf(_SC_LEVEL1_DCACHE_LINESIZE);
+  if (value > 0)
+    return (size_t)value;
+#endif
+#if defined(__APPLE__)
+  size_t value = 0;
+  size_t size = sizeof(value);
+  if (sysctlbyname("hw.cachelinesize", &value, &size, NULL, 0) == 0)
+    return value;
+#endif
+  return 0;
+}
+
+static size_t reported_cache_size(unsigned level) {
+  long value = -1;
+#if defined(_SC_LEVEL1_DCACHE_SIZE)
+  if (level == 1)
+    value = sysconf(_SC_LEVEL1_DCACHE_SIZE);
+#endif
+#if defined(_SC_LEVEL2_CACHE_SIZE)
+  if (level == 2)
+    value = sysconf(_SC_LEVEL2_CACHE_SIZE);
+#endif
+#if defined(_SC_LEVEL3_CACHE_SIZE)
+  if (level == 3)
+    value = sysconf(_SC_LEVEL3_CACHE_SIZE);
+#endif
+  if (value > 0)
+    return (size_t)value;
+#if defined(__APPLE__)
+  const char *name = level == 1 ? "hw.l1dcachesize"
+                      : level == 2 ? "hw.l2cachesize"
+                                   : "hw.l3cachesize";
+  size_t result = 0;
+  size_t size = sizeof(result);
+  if (sysctlbyname(name, &result, &size, NULL, 0) == 0)
+    return result;
+#endif
+  return 0;
+}
 
 static double now_ns(void) {
   struct timespec ts;
@@ -194,6 +245,14 @@ int main(int argc, char **argv) {
     return 2;
   }
 
+  size_t cache_line = reported_cache_line_bytes();
+  if (cache_line > 0)
+    printf("system\tcache_line_bytes\t%zu\n", cache_line);
+  for (unsigned level = 1; level <= 3; ++level) {
+    size_t cache_size = reported_cache_size(level);
+    if (cache_size > 0)
+      printf("system\tl%u_cache_bytes\t%zu\n", level, cache_size);
+  }
   run_latency(quick);
   run_bandwidth(quick);
   run_stride(quick);

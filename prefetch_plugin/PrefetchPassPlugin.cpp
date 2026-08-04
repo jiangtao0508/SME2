@@ -4,13 +4,19 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Tools/Plugins/PassPlugin.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Config/llvm-config.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
+
+#include <algorithm>
+#include <optional>
 
 using namespace mlir;
 
@@ -50,6 +56,163 @@ struct PrefetchSnapshotPass
     output << "module {\n";
     getOperation().print(output);
     output << "\n}\n";
+  }
+};
+
+static std::optional<int64_t> constantIndex(Value value) {
+  APInt result;
+  if (matchPattern(value, m_ConstantInt(&result)))
+    return result.getSExtValue();
+  return std::nullopt;
+}
+
+static int64_t elementBitWidth(Type elementType) {
+  if (auto floatType = dyn_cast<FloatType>(elementType))
+    return floatType.getWidth();
+  if (auto integerType = dyn_cast<IntegerType>(elementType))
+    return integerType.getWidth();
+  return 0;
+}
+
+static llvm::json::Value optionalInteger(std::optional<int64_t> value) {
+  if (value)
+    return *value;
+  return nullptr;
+}
+
+struct AnalyzeGemmRhsPass
+    : public PassWrapper<AnalyzeGemmRhsPass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(AnalyzeGemmRhsPass)
+
+  AnalyzeGemmRhsPass() = default;
+  AnalyzeGemmRhsPass(const AnalyzeGemmRhsPass &pass) : PassWrapper(pass) {}
+
+  Option<std::string> outputPath{
+      *this, "output-path",
+      llvm::cl::desc("Path for numeric packed GEMM RHS features"),
+      llvm::cl::init("")};
+
+  StringRef getArgument() const final { return "prefetch-analyze-gemm-rhs"; }
+  StringRef getDescription() const final {
+    return "Extract numeric packed GEMM RHS prefetch features without changing IR";
+  }
+
+  void runOnOperation() override {
+    ModuleOp module = getOperation();
+    if (outputPath.empty()) {
+      module.emitError("prefetch-analyze-gemm-rhs requires output-path");
+      return signalPassFailure();
+    }
+
+    llvm::json::Array candidates;
+    int64_t candidateId = 0;
+    module.walk([&](scf::ForOp loop) {
+      std::optional<llvm::json::Object> bestFeature;
+      int64_t bestColumns = -1;
+      for (Operation &operation : loop.getBody()->getOperations()) {
+        auto subview = dyn_cast<memref::SubViewOp>(operation);
+        if (!subview)
+          continue;
+        auto sourceType = dyn_cast<MemRefType>(subview.getSource().getType());
+        if (!sourceType || sourceType.getRank() != 2 ||
+            !subview.getSource().getDefiningOp<memref::AllocOp>())
+          continue;
+
+        SmallVector<OpFoldResult> offsets = subview.getMixedOffsets();
+        if (offsets.size() != 2 ||
+            offsets[0].dyn_cast<Value>() != loop.getInductionVar() ||
+            !offsets[1].dyn_cast<Value>())
+          continue;
+
+        int64_t vectorReadBytes = 0;
+        int64_t bitWidth = elementBitWidth(sourceType.getElementType());
+        if (bitWidth <= 0 || bitWidth % 8 != 0)
+          continue;
+        int64_t elementBytes = bitWidth / 8;
+        for (Operation *user : subview->getUsers()) {
+          if (user->getName().getStringRef() != "vector.transfer_read" ||
+              user->getNumResults() == 0)
+            continue;
+          auto vectorType = dyn_cast<VectorType>(user->getResult(0).getType());
+          if (vectorType)
+            vectorReadBytes = std::max<int64_t>(
+                vectorReadBytes, vectorType.getNumElements() * elementBytes);
+        }
+        if (vectorReadBytes == 0)
+          continue;
+
+        int64_t rows = sourceType.getShape()[0];
+        int64_t columns = sourceType.getShape()[1];
+        if (ShapedType::isDynamic(rows) || ShapedType::isDynamic(columns))
+          continue;
+        if (columns <= bestColumns)
+          continue;
+        auto lower = constantIndex(loop.getLowerBound());
+        auto upper = constantIndex(loop.getUpperBound());
+        auto step = constantIndex(loop.getStep());
+        std::optional<int64_t> tripCount;
+        if (lower && upper && step && *step > 0 && *upper >= *lower)
+          tripCount = (*upper - *lower + *step - 1) / *step;
+
+        ArrayRef<int64_t> staticSizes = subview.getStaticSizes();
+        auto staticOrNull = [](int64_t value) -> llvm::json::Value {
+          if (ShapedType::isDynamic(value))
+            return nullptr;
+          return value;
+        };
+        llvm::json::Object feature{
+            {"candidate_id", 0},
+            {"source_rows", rows},
+            {"source_columns", columns},
+            {"element_bits", bitWidth},
+            {"element_bytes", elementBytes},
+            {"source_allocation_bytes", rows * columns * elementBytes},
+            {"rhs_row_bytes", columns * elementBytes},
+            {"vector_read_bytes", vectorReadBytes},
+            {"loop_lower", optionalInteger(lower)},
+            {"loop_upper", optionalInteger(upper)},
+            {"loop_step", optionalInteger(step)},
+            {"loop_trip_count", optionalInteger(tripCount)},
+            {"subview_reduction_extent",
+             staticSizes.empty() ? llvm::json::Value(nullptr)
+                                 : staticOrNull(staticSizes[0])},
+            {"subview_column_extent",
+             staticSizes.size() < 2 ? llvm::json::Value(nullptr)
+                                    : staticOrNull(staticSizes[1])},
+            {"bytes_advanced_per_loop_iteration",
+             step ? llvm::json::Value(*step * columns * elementBytes)
+                  : llvm::json::Value(nullptr)},
+        };
+        bestColumns = columns;
+        bestFeature = std::move(feature);
+      }
+      if (bestFeature) {
+        (*bestFeature)["candidate_id"] = candidateId++;
+        candidates.push_back(std::move(*bestFeature));
+      }
+    });
+
+    if (candidates.empty()) {
+      module.emitError(
+          "could not find a tiled GEMM RHS subview in an scf.for K loop");
+      return signalPassFailure();
+    }
+    llvm::json::Object root{
+        {"schema_version", "1.0"},
+        {"source_stage", "bufferized_before_sme"},
+        {"matcher", "allocated_rank2_rhs_subview_feeding_vector_read"},
+        {"candidate_count", static_cast<int64_t>(candidates.size())},
+        {"candidates", std::move(candidates)},
+    };
+
+    std::error_code error;
+    llvm::raw_fd_ostream output(outputPath, error, llvm::sys::fs::OF_Text);
+    if (error) {
+      module.emitError() << "cannot open GEMM feature output '" << outputPath
+                         << "': " << error.message();
+      return signalPassFailure();
+    }
+    output << llvm::formatv("{0:2}\n", llvm::json::Value(std::move(root)));
   }
 };
 
@@ -335,6 +498,7 @@ struct PrefetchGemmRhsPass
 
 void registerPrefetchPasses() {
   PassRegistration<PrefetchSnapshotPass>();
+  PassRegistration<AnalyzeGemmRhsPass>();
   PassRegistration<PrefetchMaterializePass>();
   PassRegistration<PrefetchGemmRhsPass>();
 }
