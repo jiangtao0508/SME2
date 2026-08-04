@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SME FMOPA Timing Profile 1.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "profile_id", "generated_utc", "source", "system",
+    "measurement", "derived", "quality", "provenance"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "profile_id": {"type": "string", "minLength": 1},
+    "generated_utc": {"type": "string", "minLength": 1},
+    "source": {"const": "measured"},
+    "system": {"type": "object"},
+    "measurement": {"type": "object"},
+    "derived": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "streaming_vector_bytes", "f32_lanes_per_streaming_vector",
+        "f32_flops_per_fmopa", "architected_timer_frequency_hz",
+        "loop_baseline_ticks_per_group", "one_tile_dependency_ticks_per_fmopa",
+        "four_tile_throughput_ticks_per_fmopa",
+        "one_tile_dependency_ns_per_fmopa",
+        "four_tile_throughput_ns_per_fmopa",
+        "four_tile_throughput_flops_per_ns"
+      ],
+      "properties": {
+        "streaming_vector_bytes": {"type": "integer", "minimum": 16},
+        "f32_lanes_per_streaming_vector": {"type": "integer", "minimum": 1},
+        "f32_flops_per_fmopa": {"type": "integer", "minimum": 1},
+        "architected_timer_frequency_hz": {"type": "number", "exclusiveMinimum": 0},
+        "loop_baseline_ticks_per_group": {"type": "number", "minimum": 0},
+        "one_tile_dependency_ticks_per_fmopa": {"type": "number", "exclusiveMinimum": 0},
+        "four_tile_throughput_ticks_per_fmopa": {"type": "number", "exclusiveMinimum": 0},
+        "one_tile_dependency_ns_per_fmopa": {"type": "number", "exclusiveMinimum": 0},
+        "four_tile_throughput_ns_per_fmopa": {"type": "number", "exclusiveMinimum": 0},
+        "four_tile_throughput_flops_per_ns": {"type": "number", "exclusiveMinimum": 0}
+      }
+    },
+    "quality": {"type": "object"},
+    "provenance": {"type": "object"}
+  }
+}
+

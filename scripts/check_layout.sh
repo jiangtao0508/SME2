@@ -28,6 +28,8 @@ required=(
   "hardware_calibration/run_calibration.sh"
   "cost_model/plan_gemm_rhs.py"
   "cost_model/prefetch-plan-v1.1.schema.json"
+  "sme_timing/run_sme_timing.sh"
+  "sme_timing/sme-timing-profile-v1.schema.json"
 )
 
 missing=0
