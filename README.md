@@ -122,6 +122,28 @@ GEMM 在每一层 IR 中可利用的数据、预取语义，以及继续 materia
 下层和硬件信息，见
 [docs/GEMM_各IR层软件预取信息与依赖.md](docs/GEMM_各IR层软件预取信息与依赖.md)。
 
+## 一次性硬件校准
+
+不再通过逐个试验预取组合来猜硬件参数。先在目标机器上运行一次完整
+校准：
+
+```bash
+bash hardware_calibration/run_calibration.sh full /path/to/project-output/hardware
+```
+
+它会测量 Cache 容量/行大小、依赖访存延迟、单核读带宽、stride 行为和
+`issue_every=1/2/4` 的预取发射成本，产生 `HardwareProfile.v1.1.json`。
+快速自检：
+
+```bash
+bash hardware_calibration/selftest.sh
+```
+
+详细的测量边界和字段说明见
+[hardware_calibration/README.md](hardware_calibration/README.md)。该文件只包含数值测量和
+机器基本信息，不读取 Triton/FlagGems 源码、IR 或测试数据；是否可带离现场
+仍以对方的数据规则为准。
+
 ## 一屏查看现场结论
 
 不阅读长报告，自动选择最新一次追踪结果：
