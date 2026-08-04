@@ -70,9 +70,12 @@ RESUME_INPUT="$OUTPUT_DIR/00_resume_after_prefetch.mlir"
 FINAL_01="$OUTPUT_DIR/01_gemm_rhs_prefetch.mlir"
 
 if [[ "$MODE" == "roundtrip" ]]; then
+  BASELINE_INPUT="$OUTPUT_DIR/00_baseline_tptr_preload.mlir"
   BASELINE_01="$OUTPUT_DIR/01_baseline_full_schedule.mlir"
   FINAL_01="$OUTPUT_DIR/01_roundtrip_no_prefetch.mlir"
-  "$TRITON_SHARED_OPT" "$ORIGINAL_INPUT" \
+  python3 "$PLUGIN_DIR/split_transform_replay.py" preload \
+    "$ORIGINAL_INPUT" "$BASELINE_INPUT"
+  "$TRITON_SHARED_OPT" "$BASELINE_INPUT" \
     --mlir-disable-threading \
     --transform-interpreter \
     -o "$BASELINE_01"

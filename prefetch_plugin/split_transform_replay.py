@@ -50,25 +50,28 @@ def make_prefix(original: str) -> str:
     return "".join(lines)
 
 
-def make_resume(original: str, payload: str) -> str:
+def add_tptr_preload(payload: str) -> str:
     # Some triton-shared builds register the tptr dialect lazily from the
     # tptr-to-llvm pass. MLIR does not allow the first dialect load from a
     # multi-threaded pass execution context. Keep one harmless tptr op in the
     # payload so parsing loads the dialect before the pass manager starts.
-    if "tptr.type_offset" not in payload:
-        payload_lines = payload.splitlines(keepends=True)
-        for index, line in enumerate(payload_lines):
-            match = re.match(r"^(\s*)func\.func\b.*\{\s*$", line)
-            if match:
-                indent = match.group(1) + "  "
-                payload_lines.insert(
-                    index + 1,
-                    f"{indent}%__prefetch_preload_tptr = tptr.type_offset f32\n",
-                )
-                payload = "".join(payload_lines)
-                break
-        else:
-            raise ValueError("could not find a func.func body for tptr preload")
+    if "tptr.type_offset" in payload:
+        return payload
+    payload_lines = payload.splitlines(keepends=True)
+    for index, line in enumerate(payload_lines):
+        match = re.match(r"^(\s*)func\.func\b.*\{\s*$", line)
+        if match:
+            indent = match.group(1) + "  "
+            payload_lines.insert(
+                index + 1,
+                f"{indent}%__prefetch_preload_tptr = tptr.type_offset f32\n",
+            )
+            return "".join(payload_lines)
+    raise ValueError("could not find a func.func body for tptr preload")
+
+
+def make_resume(original: str, payload: str) -> str:
+    payload = add_tptr_preload(payload)
 
     original_lines = original.splitlines(keepends=True)
     schedule_start = find_unique(
@@ -113,6 +116,10 @@ def main() -> int:
     prefix.add_argument("original", type=pathlib.Path)
     prefix.add_argument("output", type=pathlib.Path)
 
+    preload = subparsers.add_parser("preload")
+    preload.add_argument("original", type=pathlib.Path)
+    preload.add_argument("output", type=pathlib.Path)
+
     resume = subparsers.add_parser("resume")
     resume.add_argument("original", type=pathlib.Path)
     resume.add_argument("payload", type=pathlib.Path)
@@ -130,6 +137,8 @@ def main() -> int:
         original = args.original.read_text()
         if args.command == "prefix":
             result = make_prefix(original)
+        elif args.command == "preload":
+            result = add_tptr_preload(original)
         else:
             result = make_resume(original, args.payload.read_text())
         output.parent.mkdir(parents=True, exist_ok=True)
