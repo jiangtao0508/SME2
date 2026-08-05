@@ -179,6 +179,18 @@ bash sme_timing/run_sme_timing.sh /path/to/project-output/sme-timing
 单 ZA tile 依赖延迟和四 tile 吞吐，并扣除空循环开销。详见
 [sme_timing/README.md](sme_timing/README.md)。
 
+现场一次性采集上述三类模型输入：
+
+```bash
+bash scripts/onsite_collect_model_inputs.sh \
+  /path/to/llvm-install \
+  /path/to/bufferized_before_sme.mlir \
+  /path/to/onsite-output \
+  full
+```
+
+脚本会创建带时间戳的新目录，因此不会再因为旧输出目录已存在而失败。
+
 ## 一屏查看现场结论
 
 不阅读长报告，自动选择最新一次追踪结果：
