@@ -144,6 +144,12 @@ def direct_stage_file(group: Path, names: tuple[str, ...]) -> Path | None:
     return matches[0] if len(matches) == 1 else None
 
 
+def is_native_dump_group(group: Path) -> bool:
+    return direct_stage_file(group, STAGES["tt"]) is not None and direct_stage_file(
+        group, STAGES["ttshared"]
+    ) is not None
+
+
 def group_summary(index: int, group: Path) -> str:
     present: list[str] = []
     texts: list[str] = []
@@ -221,16 +227,23 @@ def main() -> int:
     )
 
     groups = discover_groups(args.dump_directory)
+    native_groups = [group for group in groups if is_native_dump_group(group)]
+    selected_group = False
     if args.group_index is not None:
         if args.group_index < 0 or args.group_index >= len(groups):
             parser.error(f"group index must be in 0..{max(0, len(groups) - 1)}")
         dump_directory = groups[args.group_index]
+        selected_group = True
+    elif len(native_groups) == 1:
+        dump_directory = native_groups[0]
+        selected_group = True
+        print("NATIVE_GROUP auto_selected=1")
     else:
         dump_directory = args.dump_directory
 
     found = 0
     for stage, names in STAGES.items():
-        if args.group_index is not None:
+        if selected_group:
             direct = direct_stage_file(dump_directory, names)
             matches = [direct] if direct else []
         else:
@@ -242,10 +255,11 @@ def main() -> int:
             print(f"IR {stage} ambiguous_matches={len(matches)}")
         else:
             print(f"IR {stage} missing=1")
-    if args.group_index is None and any(
+    if not selected_group and any(
         len(find_stage_files(dump_directory, names)) > 1 for names in STAGES.values()
     ):
         print(f"GROUP_COUNT={len(groups)}")
+        print(f"NATIVE_GROUP_COUNT={len(native_groups)}")
         for index, group in enumerate(groups):
             print(group_summary(index, group))
     if found == 0:

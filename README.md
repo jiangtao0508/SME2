@@ -164,6 +164,8 @@ python3 scripts/onsite_alignment_probe.py \
 按 `tt -> ttshared -> 00 -> 01/02` 顺序比较结构；第一个发生分歧的阶段就是需要修正
 的 frontend、转换器或 SME schedule 边界。`count_sig` 仅由标准操作计数向量计算，
 不是原始 IR 文件的散列；去掉 `--compact` 才会打印用于诊断首个分歧阶段的完整计数。
+如果混入的文件来自本项目的 round-trip/prefetch 输出，探针会优先自动选择同一目录
+中同时含原生 `tt.mlir` 和 `ttshared.mlir` 的编译器 dump，忽略项目生成的复制件。
 
 ## GEMM 数值特征与 Cost Model
 
