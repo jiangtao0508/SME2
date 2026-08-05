@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile and run the AArch64 SME FMOPA timing probe."""
+"""Compile and run the AArch64 SME BF16-to-F32 BFMOPA timing probe."""
 
 from __future__ import annotations
 
@@ -39,6 +39,7 @@ def compiler() -> str:
 def parse_probe_output(text: str) -> Dict[str, Any]:
     streaming_vector_bytes: Optional[int] = None
     timer: Optional[str] = None
+    operation: Optional[str] = None
     records: Dict[str, List[Dict[str, int]]] = {}
     for line_number, line in enumerate(text.splitlines(), 1):
         fields = line.split("\t")
@@ -47,6 +48,8 @@ def parse_probe_output(text: str) -> Dict[str, Any]:
                 streaming_vector_bytes = int(fields[2])
             elif len(fields) == 3 and fields[:2] == ["system", "timer"]:
                 timer = fields[2]
+            elif len(fields) == 3 and fields[:2] == ["system", "operation"]:
+                operation = fields[2]
             elif len(fields) == 6 and fields[0] == "timing":
                 records.setdefault(fields[1], []).append(
                     {
@@ -60,12 +63,13 @@ def parse_probe_output(text: str) -> Dict[str, Any]:
                 raise ValueError("unknown record")
         except ValueError as error:
             raise ValueError(f"invalid SME probe output line {line_number}: {line!r}") from error
-    required = {"baseline", "fmopa_one_tile", "fmopa_four_tiles"}
+    required = {"baseline", "bfmopa_one_tile", "bfmopa_four_tiles"}
     if streaming_vector_bytes is None or not required.issubset(records):
         raise ValueError("SME probe output is incomplete")
     return {
         "streaming_vector_bytes": streaming_vector_bytes,
         "timer": timer,
+        "operation": operation,
         "records": records,
     }
 
@@ -77,8 +81,8 @@ def median_ticks_per_group(records: Sequence[Mapping[str, int]]) -> float:
 def derive_profile(parsed: Mapping[str, Any]) -> Dict[str, Any]:
     records = parsed["records"]
     baseline = median_ticks_per_group(records["baseline"])
-    one_total = median_ticks_per_group(records["fmopa_one_tile"])
-    four_total = median_ticks_per_group(records["fmopa_four_tiles"])
+    one_total = median_ticks_per_group(records["bfmopa_one_tile"])
+    four_total = median_ticks_per_group(records["bfmopa_four_tiles"])
     frequencies = [
         record["timer_frequency_hz"]
         for samples in records.values()
@@ -88,26 +92,27 @@ def derive_profile(parsed: Mapping[str, Any]) -> Dict[str, Any]:
     one_ticks = one_total - baseline
     four_ticks = (four_total - baseline) / 4.0
     if one_ticks <= 0 or four_ticks <= 0:
-        raise ValueError("FMOPA timing was not greater than the loop baseline")
+        raise ValueError("BFMOPA timing was not greater than the loop baseline")
     tick_ns = 1.0e9 / frequency
     streaming_vector_bytes = int(parsed["streaming_vector_bytes"])
-    lanes_f32 = streaming_vector_bytes // 4
-    if lanes_f32 <= 0:
+    lanes_bf16 = streaming_vector_bytes // 2
+    if lanes_bf16 <= 0:
         raise ValueError("invalid streaming vector length")
-    flops_per_fmopa = 2 * lanes_f32 * lanes_f32
+    flops_per_bfmopa = 2 * lanes_bf16 * lanes_bf16
     one_ns = one_ticks * tick_ns
     throughput_ns = four_ticks * tick_ns
     return {
         "streaming_vector_bytes": streaming_vector_bytes,
-        "f32_lanes_per_streaming_vector": lanes_f32,
-        "f32_flops_per_fmopa": flops_per_fmopa,
+        "operation": parsed.get("operation") or "BFMOPA_BF16_TO_F32",
+        "bf16_lanes_per_streaming_vector": lanes_bf16,
+        "bf16_flops_per_bfmopa": flops_per_bfmopa,
         "architected_timer_frequency_hz": frequency,
         "loop_baseline_ticks_per_group": baseline,
-        "one_tile_dependency_ticks_per_fmopa": one_ticks,
-        "four_tile_throughput_ticks_per_fmopa": four_ticks,
-        "one_tile_dependency_ns_per_fmopa": one_ns,
-        "four_tile_throughput_ns_per_fmopa": throughput_ns,
-        "four_tile_throughput_flops_per_ns": flops_per_fmopa / throughput_ns,
+        "one_tile_dependency_ticks_per_bfmopa": one_ticks,
+        "four_tile_throughput_ticks_per_bfmopa": four_ticks,
+        "one_tile_dependency_ns_per_bfmopa": one_ns,
+        "four_tile_throughput_ns_per_bfmopa": throughput_ns,
+        "four_tile_throughput_flops_per_ns": flops_per_bfmopa / throughput_ns,
     }
 
 
@@ -121,7 +126,7 @@ def build_and_run(groups: int) -> Dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="sme-fmopa-timing-") as temporary:
         binary = pathlib.Path(temporary) / "sme_fmopa_probe"
         completed = run(
-            [cc, "-O2", "-Wall", "-Wextra", "-march=armv9-a+sme", str(source_c), str(source_s), "-o", str(binary)]
+            [cc, "-O2", "-Wall", "-Wextra", "-march=armv9-a+sme+bf16", str(source_c), str(source_s), "-o", str(binary)]
         )
         if completed.returncode != 0:
             raise RuntimeError(f"SME timing probe compilation failed:\n{completed.stderr}")
@@ -133,7 +138,7 @@ def build_and_run(groups: int) -> Dict[str, Any]:
             hint = ""
             if measured.returncode < 0:
                 hint = (
-                    " (CNTVCT fallback also failed; the SME/RDSVL/FMOPA execution path is unavailable)"
+                    " (CNTVCT fallback also failed; the SME/RDSVL/BFMOPA execution path is unavailable)"
                     if counter_sigill
                     else " (the OS or CPU may not permit SME or CNTVCT_EL0)"
                 )
@@ -162,7 +167,7 @@ def build_and_run(groups: int) -> Dict[str, Any]:
             "cntvct_sigill_fallback_used": counter_sigill,
             "includes_smstart_smstop_in_timed_region": False,
             "warnings": [
-                "four-tile FMOPA throughput is a compute lower bound for a real K step; loads and loop scheduling are not included"
+                "four-tile BFMOPA throughput is a compute lower bound for a real K step; loads and loop scheduling are not included"
             ],
         },
         "provenance": {
@@ -177,11 +182,12 @@ def summary(profile: Mapping[str, Any]) -> str:
     derived = profile["derived"]
     return "\n".join(
         [
-            "SME FMOPA Timing Summary",
+            "SME BFMOPA Timing Summary",
             f"profile_id={profile['profile_id']}",
             f"streaming_vector_bytes={derived['streaming_vector_bytes']}",
-            f"one_tile_dependency_ns_per_fmopa={derived['one_tile_dependency_ns_per_fmopa']}",
-            f"four_tile_throughput_ns_per_fmopa={derived['four_tile_throughput_ns_per_fmopa']}",
+            f"operation={derived['operation']}",
+            f"one_tile_dependency_ns_per_bfmopa={derived['one_tile_dependency_ns_per_bfmopa']}",
+            f"four_tile_throughput_ns_per_bfmopa={derived['four_tile_throughput_ns_per_bfmopa']}",
             f"four_tile_throughput_flops_per_ns={derived['four_tile_throughput_flops_per_ns']}",
         ]
     ) + "\n"

@@ -1,2 +1,1 @@
-"""AArch64 SME FMOPA timing calibration."""
-
+"""AArch64 SME BFMOPA timing calibration."""

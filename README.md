@@ -169,13 +169,13 @@ python3 cost_model/plan_gemm_rhs.py \
 这一版不搜索候选矩阵；距离、覆盖 cache-line 和发射频率都由延迟、流量与成本
 约束直接推导。详见 [cost_model/README.md](cost_model/README.md)。
 
-K-loop 的 SME 计算下界由独立 FMOPA 探针测量：
+K-loop 的 SME 计算下界由独立 BFMOPA 探针测量：
 
 ```bash
 bash sme_timing/run_sme_timing.sh /path/to/project-output/sme-timing
 ```
 
-探针在 AArch64 上原生执行 `SMSTART/RDSVL/FMOPA/SMSTOP`，用 `CNTVCT_EL0` 分别测量
+探针在 AArch64 上原生执行 `SMSTART/RDSVL/BFMOPA/SMSTOP`，用 `CNTVCT_EL0` 分别测量
 单 ZA tile 依赖延迟和四 tile 吞吐，并扣除空循环开销。详见
 [sme_timing/README.md](sme_timing/README.md)。
 

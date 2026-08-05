@@ -1,25 +1,50 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include <inttypes.h>
+#include <errno.h>
+#include <linux/prctl.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <sys/prctl.h>
+
+#ifndef PR_SME_SET_VL
+#define PR_SME_SET_VL 63
+#define PR_SME_GET_VL 64
+#define PR_SME_VL_LEN_MASK 0xffff
+#endif
 
 extern void sme_measure_loop_baseline(uint64_t groups, uint64_t *ticks,
                                       uint64_t *frequency);
-extern void sme_measure_fmopa_one_tile(uint64_t groups, uint64_t *ticks,
-                                      uint64_t *frequency);
-extern void sme_measure_fmopa_four_tiles(uint64_t groups, uint64_t *ticks,
-                                        uint64_t *frequency);
+extern void sme_measure_bfmopa_one_tile(uint64_t groups, uint64_t *ticks,
+                                       uint64_t *frequency);
+extern void sme_measure_bfmopa_four_tiles(uint64_t groups, uint64_t *ticks,
+                                         uint64_t *frequency);
 extern uint64_t sme_streaming_vector_bytes(void);
 extern void sme_run_loop_baseline(uint64_t groups);
-extern void sme_run_fmopa_one_tile(uint64_t groups);
-extern void sme_run_fmopa_four_tiles(uint64_t groups);
+extern void sme_run_bfmopa_one_tile(uint64_t groups);
+extern void sme_run_bfmopa_four_tiles(uint64_t groups);
 
 typedef void (*probe_function)(uint64_t, uint64_t *, uint64_t *);
 typedef void (*clock_probe_function)(uint64_t);
+
+static void initialize_sme_vector_length(void) {
+  errno = 0;
+  long current = prctl(PR_SME_GET_VL, 0UL, 0UL, 0UL, 0UL);
+  if (current < 0) {
+    fprintf(stderr, "PR_SME_GET_VL failed: %s\n", strerror(errno));
+    exit(3);
+  }
+  unsigned long vector_length = (unsigned long)current & PR_SME_VL_LEN_MASK;
+  if (vector_length == 0 ||
+      prctl(PR_SME_SET_VL, vector_length, 0UL, 0UL, 0UL) < 0) {
+    fprintf(stderr, "PR_SME_SET_VL failed: %s\n", strerror(errno));
+    exit(3);
+  }
+  fprintf(stderr, "sme_vector_length_bytes=%lu\n", vector_length);
+}
 
 static uint64_t now_ns(void) {
   struct timespec timestamp;
@@ -85,25 +110,27 @@ int main(int argc, char **argv) {
     return 2;
   }
 
+  initialize_sme_vector_length();
+  printf("system\toperation\tBFMOPA_BF16_TO_F32\n");
   printf("system\tstreaming_vector_bytes\t%" PRIu64 "\n",
          sme_streaming_vector_bytes());
   if (use_clock) {
-    sme_run_fmopa_four_tiles(10000);
+    sme_run_bfmopa_four_tiles(10000);
     printf("system\ttimer\tCLOCK_MONOTONIC_RAW\n");
     run_clock_probe("baseline", sme_run_loop_baseline, groups, 0, repetitions);
-    run_clock_probe("fmopa_one_tile", sme_run_fmopa_one_tile, groups, 1,
+    run_clock_probe("bfmopa_one_tile", sme_run_bfmopa_one_tile, groups, 1,
                     repetitions);
-    run_clock_probe("fmopa_four_tiles", sme_run_fmopa_four_tiles, groups, 4,
+    run_clock_probe("bfmopa_four_tiles", sme_run_bfmopa_four_tiles, groups, 4,
                     repetitions);
   } else {
     uint64_t ignored_ticks = 0;
     uint64_t ignored_frequency = 0;
-    sme_measure_fmopa_four_tiles(10000, &ignored_ticks, &ignored_frequency);
+    sme_measure_bfmopa_four_tiles(10000, &ignored_ticks, &ignored_frequency);
     printf("system\ttimer\tCNTVCT_EL0\n");
     run_probe("baseline", sme_measure_loop_baseline, groups, 0, repetitions);
-    run_probe("fmopa_one_tile", sme_measure_fmopa_one_tile, groups, 1,
+    run_probe("bfmopa_one_tile", sme_measure_bfmopa_one_tile, groups, 1,
               repetitions);
-    run_probe("fmopa_four_tiles", sme_measure_fmopa_four_tiles, groups, 4,
+    run_probe("bfmopa_four_tiles", sme_measure_bfmopa_four_tiles, groups, 4,
               repetitions);
   }
   return 0;
