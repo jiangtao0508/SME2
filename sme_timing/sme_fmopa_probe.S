@@ -70,4 +70,45 @@ sme_measure_fmopa_four_tiles:
         probe_end
         .size sme_measure_fmopa_four_tiles, .-sme_measure_fmopa_four_tiles
 
+        .globl sme_run_loop_baseline
+        .type sme_run_loop_baseline, %function
+sme_run_loop_baseline:
+        smstart za
+        ptrue   p0.s
+.Lclock_baseline_loop:
+        subs    x0, x0, #1
+        b.ne    .Lclock_baseline_loop
+        smstop
+        ret
+        .size sme_run_loop_baseline, .-sme_run_loop_baseline
+
+        .globl sme_run_fmopa_one_tile
+        .type sme_run_fmopa_one_tile, %function
+sme_run_fmopa_one_tile:
+        smstart za
+        ptrue   p0.s
+.Lclock_one_tile_loop:
+        fmopa   za0.s, p0/m, p0/m, z0.s, z1.s
+        subs    x0, x0, #1
+        b.ne    .Lclock_one_tile_loop
+        smstop
+        ret
+        .size sme_run_fmopa_one_tile, .-sme_run_fmopa_one_tile
+
+        .globl sme_run_fmopa_four_tiles
+        .type sme_run_fmopa_four_tiles, %function
+sme_run_fmopa_four_tiles:
+        smstart za
+        ptrue   p0.s
+.Lclock_four_tile_loop:
+        fmopa   za0.s, p0/m, p0/m, z0.s, z1.s
+        fmopa   za1.s, p0/m, p0/m, z2.s, z3.s
+        fmopa   za2.s, p0/m, p0/m, z4.s, z5.s
+        fmopa   za3.s, p0/m, p0/m, z6.s, z7.s
+        subs    x0, x0, #1
+        b.ne    .Lclock_four_tile_loop
+        smstop
+        ret
+        .size sme_run_fmopa_four_tiles, .-sme_run_fmopa_four_tiles
+
         .section .note.GNU-stack,"",%progbits

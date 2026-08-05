@@ -38,12 +38,15 @@ def compiler() -> str:
 
 def parse_probe_output(text: str) -> Dict[str, Any]:
     streaming_vector_bytes: Optional[int] = None
+    timer: Optional[str] = None
     records: Dict[str, List[Dict[str, int]]] = {}
     for line_number, line in enumerate(text.splitlines(), 1):
         fields = line.split("\t")
         try:
             if len(fields) == 3 and fields[:2] == ["system", "streaming_vector_bytes"]:
                 streaming_vector_bytes = int(fields[2])
+            elif len(fields) == 3 and fields[:2] == ["system", "timer"]:
+                timer = fields[2]
             elif len(fields) == 6 and fields[0] == "timing":
                 records.setdefault(fields[1], []).append(
                     {
@@ -60,7 +63,11 @@ def parse_probe_output(text: str) -> Dict[str, Any]:
     required = {"baseline", "fmopa_one_tile", "fmopa_four_tiles"}
     if streaming_vector_bytes is None or not required.issubset(records):
         raise ValueError("SME probe output is incomplete")
-    return {"streaming_vector_bytes": streaming_vector_bytes, "records": records}
+    return {
+        "streaming_vector_bytes": streaming_vector_bytes,
+        "timer": timer,
+        "records": records,
+    }
 
 
 def median_ticks_per_group(records: Sequence[Mapping[str, int]]) -> float:
@@ -119,6 +126,9 @@ def build_and_run(groups: int) -> Dict[str, Any]:
         if completed.returncode != 0:
             raise RuntimeError(f"SME timing probe compilation failed:\n{completed.stderr}")
         measured = run([str(binary), str(groups)], timeout=300)
+        counter_sigill = measured.returncode == -4
+        if counter_sigill:
+            measured = run([str(binary), str(groups), "--clock"], timeout=300)
         if measured.returncode != 0:
             hint = ""
             if measured.returncode < 0:
@@ -144,7 +154,8 @@ def build_and_run(groups: int) -> Dict[str, Any]:
         "derived": derived,
         "quality": {
             "repetitions": len(parsed["records"]["baseline"]),
-            "timer": "CNTVCT_EL0",
+            "timer": parsed.get("timer") or "CNTVCT_EL0",
+            "cntvct_sigill_fallback_used": counter_sigill,
             "includes_smstart_smstop_in_timed_region": False,
             "warnings": [
                 "four-tile FMOPA throughput is a compute lower bound for a real K step; loads and loop scheduling are not included"
@@ -194,4 +205,3 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

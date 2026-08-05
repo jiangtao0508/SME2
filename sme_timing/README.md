@@ -19,8 +19,12 @@ bash sme_timing/run_sme_timing.sh /path/to/project-output/sme-timing
 The output is `SmeTimingProfile.v1.json`. The probe contains no Triton,
 FlagGems, input tensor, IR or kernel source data.
 
+If a restricted platform raises `SIGILL` for `CNTVCT_EL0`, the runner
+automatically repeats the same SME loops with `CLOCK_MONOTONIC_RAW`. If that
+second run also raises `SIGILL`, the failure is an SME execution or feature
+issue rather than a counter-access restriction.
+
 The four-tile result is a compute lower bound for a real GEMM K step. The Cost
 Model must combine it with the static number of FMOPA operations and the
 measured memory-transfer lower bound; it must not call the FMOPA number itself
 the complete K-step time.
-

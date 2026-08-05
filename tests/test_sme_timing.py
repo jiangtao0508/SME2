@@ -5,6 +5,7 @@ from sme_timing.calibrate_sme import derive_profile, parse_probe_output
 
 SAMPLE = """\
 system\tstreaming_vector_bytes\t64
+system\ttimer\tCLOCK_MONOTONIC_RAW
 timing\tbaseline\t0\t1000\t100\t100000000
 timing\tbaseline\t0\t1000\t110\t100000000
 timing\tfmopa_one_tile\t1\t1000\t5100\t100000000
