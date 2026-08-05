@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.metadata
 import os
 from pathlib import Path
@@ -84,8 +85,9 @@ def count_exact(text: str, operation: str) -> int:
     return len(re.findall(rf"(?<!{boundary}){re.escape(operation)}(?!{boundary})", text))
 
 
-def structure_line(stage: str, path: Path) -> str:
+def structure_line(stage: str, path: Path, compact: bool) -> str:
     text = path.read_text(encoding="utf-8", errors="replace")
+    line_count = text.count(chr(10)) + 1
     counts = {label: count_exact(text, operation) for label, operation in EXACT_OPS.items()}
     counts.update(
         sme=len(re.findall(r"(?<![A-Za-z0-9_.$-])arm_sme\.", text)),
@@ -93,8 +95,17 @@ def structure_line(stage: str, path: Path) -> str:
         transform=len(re.findall(r"(?<![A-Za-z0-9_.$-])transform\.", text)),
         llvm=len(re.findall(r"(?<![A-Za-z0-9_.$-])llvm\.", text)),
     )
+    if compact:
+        numeric_vector = ";".join(
+            [f"lines={line_count}"]
+            + [f"{name}={value}" for name, value in sorted(counts.items())]
+        )
+        signature = hashlib.sha256(numeric_vector.encode("ascii")).hexdigest()[:12]
+        selected = ("for", "matmul", "bmm", "load", "store", "sme", "tptr", "llvm")
+        fields = " ".join(f"{name}={counts[name]}" for name in selected)
+        return f"IR {stage} count_sig={signature} lines={line_count} {fields}"
     fields = " ".join(f"{name}={value}" for name, value in counts.items())
-    return f"IR {stage} lines={text.count(chr(10)) + 1} {fields}"
+    return f"IR {stage} lines={line_count} {fields}"
 
 
 def find_stage_files(dump_root: Path, names: tuple[str, ...]) -> list[Path]:
@@ -111,6 +122,11 @@ def main() -> int:
     parser.add_argument("llvm_source", type=Path)
     parser.add_argument("triton_cpu_source", type=Path)
     parser.add_argument("dump_directory", type=Path)
+    parser.add_argument(
+        "--compact",
+        action="store_true",
+        help="print a short signature derived from operation counts, not file text",
+    )
     args = parser.parse_args()
 
     for path in (args.llvm_source, args.triton_cpu_source, args.dump_directory):
@@ -155,7 +171,7 @@ def main() -> int:
     for stage, names in STAGES.items():
         matches = find_stage_files(args.dump_directory, names)
         if len(matches) == 1:
-            print(structure_line(stage, matches[0]))
+            print(structure_line(stage, matches[0], args.compact))
             found += 1
         elif matches:
             print(f"IR {stage} ambiguous_matches={len(matches)}")
