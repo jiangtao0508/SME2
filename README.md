@@ -144,6 +144,24 @@ bash hardware_calibration/selftest.sh
 机器基本信息，不读取 Triton/FlagGems 源码、IR 或测试数据；是否可带离现场
 仍以对方的数据规则为准。
 
+## 本地/现场 lowering 对齐
+
+在修改真实 GEMM 地址解析器之前，先用同一探针对公开源码版本、关键环境变量和
+各层 IR 的标准操作计数进行对齐。探针不输出 IR 文本、symbol、location、路径、
+地址或原始文件散列：
+
+```bash
+python3 scripts/onsite_alignment_probe.py \
+  /path/to/llvm-project \
+  /path/to/triton-cpu \
+  /path/to/one-bmm-dump-directory
+```
+
+如果一个目录中含有多次编译产生的同名文件，探针会报告
+`ambiguous_matches=N`，此时应把第三个参数缩小到单次 BMM 编译目录。版本对齐后，
+按 `tt -> ttshared -> 00 -> 01/02` 顺序比较结构；第一个发生分歧的阶段就是需要修正
+的 frontend、转换器或 SME schedule 边界。
+
 ## GEMM 数值特征与 Cost Model
 
 对 `bufferized_before_sme.mlir` 只读提取 K-loop 和 packed RHS 数值特征：
