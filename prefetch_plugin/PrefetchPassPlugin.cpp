@@ -110,6 +110,20 @@ static void collectFunctionArgumentIndices(Value root, func::FuncOp function,
         break;
       }
     }
+    if (auto blockArgument = dyn_cast<BlockArgument>(value)) {
+      Operation *parent = blockArgument.getOwner()->getParentOp();
+      if (auto forOp = dyn_cast_or_null<scf::ForOp>(parent)) {
+        unsigned argumentNumber = blockArgument.getArgNumber();
+        if (argumentNumber > 0) {
+          unsigned iterIndex = argumentNumber - 1;
+          if (iterIndex < forOp.getInitArgs().size())
+            worklist.push_back(forOp.getInitArgs()[iterIndex]);
+          auto yield = dyn_cast<scf::YieldOp>(forOp.getBody()->getTerminator());
+          if (yield && iterIndex < yield.getNumOperands())
+            worklist.push_back(yield.getOperand(iterIndex));
+        }
+      }
+    }
     if (Operation *defining = value.getDefiningOp())
       llvm::append_range(worklist, defining->getOperands());
   }
