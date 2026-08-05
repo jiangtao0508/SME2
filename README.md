@@ -159,7 +159,8 @@ python3 scripts/onsite_alignment_probe.py \
 ```
 
 如果一个目录中含有多次编译产生的同名文件，探针会报告
-`ambiguous_matches=N`，此时应把第三个参数缩小到单次 BMM 编译目录。版本对齐后，
+`ambiguous_matches=N`，并按修改时间从新到旧给出不含路径的 `GROUP 0..N` 摘要。
+用 `--group-index N` 选择含 BMM/dot/matmul 特征的组后重跑即可。版本对齐后，
 按 `tt -> ttshared -> 00 -> 01/02` 顺序比较结构；第一个发生分歧的阶段就是需要修正
 的 frontend、转换器或 SME schedule 边界。`count_sig` 仅由标准操作计数向量计算，
 不是原始 IR 文件的散列；去掉 `--compact` 才会打印用于诊断首个分歧阶段的完整计数。

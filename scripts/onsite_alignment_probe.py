@@ -59,12 +59,21 @@ def run(*command: str, cwd: Path | None = None) -> str:
 
 
 def git_value(root: Path, expression: str) -> str:
-    value = run("git", "rev-parse", expression, cwd=root)
+    value = run(
+        "git", "-c", f"safe.directory={root.resolve()}", "rev-parse", expression, cwd=root
+    )
     return value[:12] if value != "unavailable" else value
 
 
 def git_dirty(root: Path, relative_path: str | None = None) -> str:
-    command = ["git", "status", "--porcelain", "--untracked-files=no"]
+    command = [
+        "git",
+        "-c",
+        f"safe.directory={root.resolve()}",
+        "status",
+        "--porcelain",
+        "--untracked-files=no",
+    ]
     if relative_path:
         command.extend(("--", relative_path))
     value = run(*command, cwd=root)
@@ -115,6 +124,45 @@ def find_stage_files(dump_root: Path, names: tuple[str, ...]) -> list[Path]:
     return sorted(matches)
 
 
+def discover_groups(dump_root: Path) -> list[Path]:
+    parents: dict[Path, set[str]] = {}
+    for stage, names in STAGES.items():
+        for name in names:
+            for path in dump_root.rglob(name):
+                if path.is_file():
+                    parents.setdefault(path.parent, set()).add(stage)
+    useful = [parent for parent, stages in parents.items() if len(stages) >= 2]
+    return sorted(
+        useful,
+        key=lambda parent: max(path.stat().st_mtime_ns for path in parent.iterdir() if path.is_file()),
+        reverse=True,
+    )
+
+
+def direct_stage_file(group: Path, names: tuple[str, ...]) -> Path | None:
+    matches = [group / name for name in names if (group / name).is_file()]
+    return matches[0] if len(matches) == 1 else None
+
+
+def group_summary(index: int, group: Path) -> str:
+    present: list[str] = []
+    texts: list[str] = []
+    for stage, names in STAGES.items():
+        path = direct_stage_file(group, names)
+        if path:
+            present.append(stage)
+            if stage in {"tt", "ttshared", "00"}:
+                texts.append(path.read_text(encoding="utf-8", errors="replace"))
+    text = "\n".join(texts)
+    return (
+        f"GROUP {index} stages={','.join(present)} "
+        f"bmm_hint={int('bmm' in text.lower())} "
+        f"ttdot={count_exact(text, 'tt.dot')} "
+        f"matmul={count_exact(text, 'linalg.matmul')} "
+        f"bmm={count_exact(text, 'linalg.batch_matmul')}"
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Report public source revisions and numeric MLIR structure only."
@@ -126,6 +174,11 @@ def main() -> int:
         "--compact",
         action="store_true",
         help="print a short signature derived from operation counts, not file text",
+    )
+    parser.add_argument(
+        "--group-index",
+        type=int,
+        help="select a numbered direct-child dump group reported by the probe",
     )
     args = parser.parse_args()
 
@@ -167,9 +220,21 @@ def main() -> int:
         + " ".join(f"{name}={os.environ.get(name, 'unset')}" for name in environment_names)
     )
 
+    groups = discover_groups(args.dump_directory)
+    if args.group_index is not None:
+        if args.group_index < 0 or args.group_index >= len(groups):
+            parser.error(f"group index must be in 0..{max(0, len(groups) - 1)}")
+        dump_directory = groups[args.group_index]
+    else:
+        dump_directory = args.dump_directory
+
     found = 0
     for stage, names in STAGES.items():
-        matches = find_stage_files(args.dump_directory, names)
+        if args.group_index is not None:
+            direct = direct_stage_file(dump_directory, names)
+            matches = [direct] if direct else []
+        else:
+            matches = find_stage_files(dump_directory, names)
         if len(matches) == 1:
             print(structure_line(stage, matches[0], args.compact))
             found += 1
@@ -177,6 +242,12 @@ def main() -> int:
             print(f"IR {stage} ambiguous_matches={len(matches)}")
         else:
             print(f"IR {stage} missing=1")
+    if args.group_index is None and any(
+        len(find_stage_files(dump_directory, names)) > 1 for names in STAGES.values()
+    ):
+        print(f"GROUP_COUNT={len(groups)}")
+        for index, group in enumerate(groups):
+            print(group_summary(index, group))
     if found == 0:
         print("ERROR no uniquely identifiable IR stage files", file=sys.stderr)
         return 1
