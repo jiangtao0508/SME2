@@ -7,8 +7,9 @@ module {
       %c64 = arith.constant 64 : index
       %pad = arith.constant 0.0 : __ELEMENT_TYPE__
       %rhs = memref.alloc() : memref<64x256x__ELEMENT_TYPE__>
-      memref.copy %input, %rhs : memref<64x256x__ELEMENT_TYPE__> to memref<64x256x__ELEMENT_TYPE__>
       scf.for %k = %c0 to %c64 step %c1 {
+        %loaded = memref.load %input[%k, %c0] : memref<64x256x__ELEMENT_TYPE__>
+        memref.store %loaded, %rhs[%k, %c0] : memref<64x256x__ELEMENT_TYPE__>
         %panel = memref.subview %rhs[%k, %c0] [1, 16] [1, 1]
           : memref<64x256x__ELEMENT_TYPE__> to memref<1x16x__ELEMENT_TYPE__, strided<[256, 1], offset: ?>>
         %value = vector.transfer_read %panel[%c0, %c0], %pad {in_bounds = [true]}

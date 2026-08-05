@@ -95,6 +95,26 @@ static Value stripKnownMemrefViews(Value value) {
   return value;
 }
 
+static void appendValuePredecessors(Value value,
+                                    SmallVectorImpl<Value> &worklist) {
+  if (auto blockArgument = dyn_cast<BlockArgument>(value)) {
+    Operation *parent = blockArgument.getOwner()->getParentOp();
+    if (auto forOp = dyn_cast_or_null<scf::ForOp>(parent)) {
+      unsigned argumentNumber = blockArgument.getArgNumber();
+      if (argumentNumber > 0) {
+        unsigned iterIndex = argumentNumber - 1;
+        if (iterIndex < forOp.getInitArgs().size())
+          worklist.push_back(forOp.getInitArgs()[iterIndex]);
+        auto yield = dyn_cast<scf::YieldOp>(forOp.getBody()->getTerminator());
+        if (yield && iterIndex < yield.getNumOperands())
+          worklist.push_back(yield.getOperand(iterIndex));
+      }
+    }
+  }
+  if (Operation *defining = value.getDefiningOp())
+    llvm::append_range(worklist, defining->getOperands());
+}
+
 static void collectFunctionArgumentIndices(Value root, func::FuncOp function,
                                            std::set<int64_t> &indices) {
   SmallVector<Value> worklist{root};
@@ -110,23 +130,63 @@ static void collectFunctionArgumentIndices(Value root, func::FuncOp function,
         break;
       }
     }
-    if (auto blockArgument = dyn_cast<BlockArgument>(value)) {
-      Operation *parent = blockArgument.getOwner()->getParentOp();
-      if (auto forOp = dyn_cast_or_null<scf::ForOp>(parent)) {
-        unsigned argumentNumber = blockArgument.getArgNumber();
-        if (argumentNumber > 0) {
-          unsigned iterIndex = argumentNumber - 1;
-          if (iterIndex < forOp.getInitArgs().size())
-            worklist.push_back(forOp.getInitArgs()[iterIndex]);
-          auto yield = dyn_cast<scf::YieldOp>(forOp.getBody()->getTerminator());
-          if (yield && iterIndex < yield.getNumOperands())
-            worklist.push_back(yield.getOperand(iterIndex));
-        }
+    appendValuePredecessors(value, worklist);
+  }
+}
+
+struct UpstreamLoadSummary {
+  int64_t memrefLoads = 0;
+  int64_t vectorTransferReads = 0;
+  int64_t tptrLoads = 0;
+  int64_t otherLoads = 0;
+  int64_t externalLoads = 0;
+  std::set<int64_t> externalArgumentIndices;
+};
+
+static UpstreamLoadSummary traceUpstreamLoads(Value root,
+                                              func::FuncOp function) {
+  UpstreamLoadSummary summary;
+  SmallVector<Value> worklist{root};
+  llvm::DenseSet<Value> visitedValues;
+  llvm::DenseSet<Operation *> visitedLoads;
+  unsigned traversed = 0;
+  while (!worklist.empty() && traversed++ < 512) {
+    Value value = worklist.pop_back_val();
+    if (!visitedValues.insert(value).second)
+      continue;
+    Operation *defining = value.getDefiningOp();
+    if (!defining) {
+      appendValuePredecessors(value, worklist);
+      continue;
+    }
+    StringRef name = defining->getName().getStringRef();
+    bool isLoad = false;
+    if (name == "memref.load") {
+      ++summary.memrefLoads;
+      isLoad = true;
+    } else if (name == "vector.transfer_read") {
+      ++summary.vectorTransferReads;
+      isLoad = true;
+    } else if (name.starts_with("tptr.") && name.contains("load")) {
+      ++summary.tptrLoads;
+      isLoad = true;
+    } else if (name.ends_with(".load") || name.contains("load")) {
+      ++summary.otherLoads;
+      isLoad = true;
+    }
+    if (isLoad && visitedLoads.insert(defining).second) {
+      std::set<int64_t> loadArguments;
+      for (Value operand : defining->getOperands())
+        collectFunctionArgumentIndices(operand, function, loadArguments);
+      if (!loadArguments.empty()) {
+        ++summary.externalLoads;
+        summary.externalArgumentIndices.insert(loadArguments.begin(),
+                                               loadArguments.end());
       }
     }
-    if (Operation *defining = value.getDefiningOp())
-      llvm::append_range(worklist, defining->getOperands());
+    appendValuePredecessors(value, worklist);
   }
+  return summary;
 }
 
 struct AllocationLineage {
@@ -135,6 +195,7 @@ struct AllocationLineage {
   int64_t storeWriters = 0;
   int64_t linalgWriters = 0;
   std::set<int64_t> sourceArgumentIndices;
+  UpstreamLoadSummary upstreamLoads;
 };
 
 static AllocationLineage traceAllocationLineage(Value allocation,
@@ -172,10 +233,27 @@ static AllocationLineage traceAllocationLineage(Value allocation,
         --lineage.linalgWriters;
       return;
     }
-    for (unsigned index = 0; index < operation->getNumOperands(); ++index) {
-      if (index != *destination)
-        collectFunctionArgumentIndices(operation->getOperand(index), function,
-                                       lineage.sourceArgumentIndices);
+    SmallVector<unsigned> sourceOperands;
+    if (name == "memref.copy" || name == "vector.transfer_write" ||
+        name == "memref.store") {
+      sourceOperands.push_back(0);
+    } else {
+      for (unsigned index = 0; index < *destination; ++index)
+        sourceOperands.push_back(index);
+    }
+    for (unsigned index : sourceOperands) {
+      Value source = operation->getOperand(index);
+      collectFunctionArgumentIndices(source, function,
+                                     lineage.sourceArgumentIndices);
+      UpstreamLoadSummary traced = traceUpstreamLoads(source, function);
+      lineage.upstreamLoads.memrefLoads += traced.memrefLoads;
+      lineage.upstreamLoads.vectorTransferReads += traced.vectorTransferReads;
+      lineage.upstreamLoads.tptrLoads += traced.tptrLoads;
+      lineage.upstreamLoads.otherLoads += traced.otherLoads;
+      lineage.upstreamLoads.externalLoads += traced.externalLoads;
+      lineage.upstreamLoads.externalArgumentIndices.insert(
+          traced.externalArgumentIndices.begin(),
+          traced.externalArgumentIndices.end());
     }
   });
   return lineage;
@@ -295,8 +373,15 @@ struct AnalyzeGemmRhsPass
         llvm::json::Array argumentIndices;
         for (int64_t index : lineage.sourceArgumentIndices)
           argumentIndices.push_back(index);
+        llvm::json::Array externalLoadArguments;
+        for (int64_t index : lineage.upstreamLoads.externalArgumentIndices)
+          externalLoadArguments.push_back(index);
         int64_t writerCount = lineage.copyWriters + lineage.vectorWriters +
                               lineage.storeWriters + lineage.linalgWriters;
+        int64_t upstreamLoadCount = lineage.upstreamLoads.memrefLoads +
+                                    lineage.upstreamLoads.vectorTransferReads +
+                                    lineage.upstreamLoads.tptrLoads +
+                                    lineage.upstreamLoads.otherLoads;
         llvm::json::Object lineageJson{
             {"writer_operation_count", writerCount},
             {"memref_copy_writer_count", lineage.copyWriters},
@@ -306,6 +391,15 @@ struct AnalyzeGemmRhsPass
             {"source_argument_indices", std::move(argumentIndices)},
             {"source_argument_count",
              static_cast<int64_t>(lineage.sourceArgumentIndices.size())},
+            {"upstream_load_count", upstreamLoadCount},
+            {"upstream_memref_load_count", lineage.upstreamLoads.memrefLoads},
+            {"upstream_vector_transfer_read_count",
+             lineage.upstreamLoads.vectorTransferReads},
+            {"upstream_tptr_load_count", lineage.upstreamLoads.tptrLoads},
+            {"upstream_other_load_count", lineage.upstreamLoads.otherLoads},
+            {"external_load_count", lineage.upstreamLoads.externalLoads},
+            {"external_load_argument_indices",
+             std::move(externalLoadArguments)},
         };
         (*bestFeature)["lineage"] = std::move(lineageJson);
         (*bestFeature)["candidate_id"] = candidateId++;

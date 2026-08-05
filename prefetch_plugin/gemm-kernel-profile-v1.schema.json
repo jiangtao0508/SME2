@@ -45,7 +45,10 @@
               "writer_operation_count", "memref_copy_writer_count",
               "vector_transfer_write_count", "memref_store_writer_count",
               "linalg_writer_count", "source_argument_indices",
-              "source_argument_count"
+              "source_argument_count", "upstream_load_count",
+              "upstream_memref_load_count", "upstream_vector_transfer_read_count",
+              "upstream_tptr_load_count", "upstream_other_load_count",
+              "external_load_count", "external_load_argument_indices"
             ],
             "properties": {
               "writer_operation_count": {"type": "integer", "minimum": 0},
@@ -58,7 +61,18 @@
                 "items": {"type": "integer", "minimum": 0},
                 "uniqueItems": true
               },
-              "source_argument_count": {"type": "integer", "minimum": 0}
+              "source_argument_count": {"type": "integer", "minimum": 0},
+              "upstream_load_count": {"type": "integer", "minimum": 0},
+              "upstream_memref_load_count": {"type": "integer", "minimum": 0},
+              "upstream_vector_transfer_read_count": {"type": "integer", "minimum": 0},
+              "upstream_tptr_load_count": {"type": "integer", "minimum": 0},
+              "upstream_other_load_count": {"type": "integer", "minimum": 0},
+              "external_load_count": {"type": "integer", "minimum": 0},
+              "external_load_argument_indices": {
+                "type": "array",
+                "items": {"type": "integer", "minimum": 0},
+                "uniqueItems": true
+              }
             }
           }
         }
