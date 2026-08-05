@@ -214,6 +214,19 @@ bash scripts/onsite_collect_model_inputs.sh \
 
 脚本会创建带时间戳的新目录，因此不会再因为旧输出目录已存在而失败。
 
+## 原始A地址软件预取候选
+
+确认真实 BMM 是 `TILE_M=TILE_N=TILE_K=4` 且已经取得完整 `00` 后，使用
+[prefetch_plugin/SOURCE_A_RUNBOOK.md](prefetch_plugin/SOURCE_A_RUNBOOK.md)。
+现有 LLVM 20 Pass 插件新增了严格的原始 A 地址 matcher 与一键脚本，生成：
+
+- 无预取 split roundtrip；
+- A-source `distance=8, issue-every=8` 的 L2 候选；
+- 同一地址和频率的 L1 候选。
+
+该工具只改写输出目录内的 IR 副本，不修改现场 LLVM、Triton、
+Triton-Shared、FlagGems 源码或安装文件。
+
 ## 一屏查看现场结论
 
 不阅读长报告，自动选择最新一次追踪结果：

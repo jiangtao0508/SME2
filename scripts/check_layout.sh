@@ -32,6 +32,12 @@ required=(
   "sme_timing/run_sme_timing.sh"
   "sme_timing/sme-timing-profile-v1.schema.json"
   "scripts/onsite_collect_model_inputs.sh"
+  "prefetch_plugin/SOURCE_A_RUNBOOK.md"
+  "prefetch_plugin/onsite_prepare_source_a.sh"
+  "prefetch_plugin/audit_bmm_source_prefetch.py"
+  "prefetch_plugin/test/bmm_source_a.mlir"
+  "tests/test_source_a_prefetch_audit.py"
+  "scripts/prepare_source_a_prefetch.sh"
 )
 
 missing=0

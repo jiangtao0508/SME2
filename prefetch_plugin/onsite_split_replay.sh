@@ -3,7 +3,7 @@ set -euo pipefail
 
 if [[ $# -lt 5 || $# -gt 10 ]]; then
   echo "usage: $0 <llvm-install-prefix> <triton-shared-opt> <00_input.mlir> <output-dir> <mode> [distance] [locality] [coverage-lines] [issue-every] [cache-line-bytes]" >&2
-  echo "mode: snapshot | roundtrip | gemm-rhs" >&2
+  echo "mode: snapshot | roundtrip | gemm-rhs | bmm-source-a" >&2
   exit 2
 fi
 
@@ -21,8 +21,8 @@ ISSUE_EVERY="${9:-1}"
 CACHE_LINE_BYTES="${10:-64}"
 MLIR_OPT="$LLVM_INSTALL_DIR/bin/mlir-opt"
 
-if [[ "$MODE" != "snapshot" && "$MODE" != "roundtrip" && "$MODE" != "gemm-rhs" ]]; then
-  echo "mode must be snapshot, roundtrip, or gemm-rhs" >&2
+if [[ "$MODE" != "snapshot" && "$MODE" != "roundtrip" && "$MODE" != "gemm-rhs" && "$MODE" != "bmm-source-a" ]]; then
+  echo "mode must be snapshot, roundtrip, gemm-rhs, or bmm-source-a" >&2
   exit 1
 fi
 if [[ "$OUTPUT_DIR" == *" "* ]]; then
@@ -123,12 +123,28 @@ if [[ -z "$PLUGIN_LIBRARY" ]]; then
 fi
 
 PREFETCHED="$OUTPUT_DIR/bufferized_before_sme.prefetch.mlir"
+PASS_PIPELINE="builtin.module(builtin.module(func.func(prefetch-gemm-rhs{distance=$DISTANCE locality=$LOCALITY coverage-lines=$COVERAGE_LINES issue-every=$ISSUE_EVERY cache-line-bytes=$CACHE_LINE_BYTES})))"
+if [[ "$MODE" == "bmm-source-a" ]]; then
+  PASS_PIPELINE="builtin.module(builtin.module(func.func(prefetch-bmm-source{argument-index=0 distance=$DISTANCE locality=$LOCALITY issue-every=$ISSUE_EVERY expected-rows=4 expected-tile-k=4})))"
+  FINAL_01="$OUTPUT_DIR/01_bmm_source_a_prefetch.mlir"
+fi
 "$MLIR_OPT" \
   --load-pass-plugin="$PLUGIN_LIBRARY" \
-  --pass-pipeline="builtin.module(builtin.module(func.func(prefetch-gemm-rhs{distance=$DISTANCE locality=$LOCALITY coverage-lines=$COVERAGE_LINES issue-every=$ISSUE_EVERY cache-line-bytes=$CACHE_LINE_BYTES})))" \
+  --pass-pipeline="$PASS_PIPELINE" \
   "$BUFFERIZED" \
   -o "$PREFETCHED"
 grep -q 'memref.prefetch' "$PREFETCHED"
+
+if [[ "$MODE" == "bmm-source-a" ]]; then
+  python3 "$PLUGIN_DIR/audit_bmm_source_prefetch.py" \
+    "$PREFETCHED" \
+    --source-argument 0 \
+    --expected-prefetches 4 \
+    --distance "$DISTANCE" \
+    --issue-every "$ISSUE_EVERY" \
+    --locality "$LOCALITY" \
+    --json "$OUTPUT_DIR/source_a_audit.json"
+fi
 
 python3 "$PLUGIN_DIR/split_transform_replay.py" resume \
   "$ORIGINAL_INPUT" "$PREFETCHED" "$RESUME_INPUT"
@@ -147,5 +163,6 @@ fi
 
 echo "PASS: split replay completed"
 echo "PASS: llvm.intr.prefetch=$PREFETCH_COUNT arm_sme.intr.mopa=$SME_COUNT"
+echo "mode: $MODE"
 echo "configuration: distance=$DISTANCE locality=$LOCALITY coverage-lines=$COVERAGE_LINES issue-every=$ISSUE_EVERY cache-line-bytes=$CACHE_LINE_BYTES"
 echo "next: run onsite_stage2.sh with $FINAL_01"

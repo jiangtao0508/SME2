@@ -711,11 +711,225 @@ struct PrefetchGemmRhsPass
   }
 };
 
+/// Prefetch the original source matrix used by the outer BMM reduction loop.
+///
+/// The FlagGems/Triton-CPU payload first creates a ranked 4x4 view of an
+/// unranked function argument and then copies that view into a private alloc:
+///
+///   %view = memref.reinterpret_cast %arg0 ...
+///   %tile = memref.alloc() : memref<4x4xbf16>
+///   memref.copy %view, %tile
+///
+/// Prefetching %tile is too late: the copy has already read the original
+/// matrix.  This pass deliberately follows the source argument instead.  It
+/// creates a guarded future view before the current view/copy and emits one
+/// prefetch per source row so that a strided 4x4 tile covers all four cache
+/// lines used by the real load.
+struct PrefetchBmmSourcePass
+    : public PassWrapper<PrefetchBmmSourcePass, OperationPass<func::FuncOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(PrefetchBmmSourcePass)
+
+  PrefetchBmmSourcePass() = default;
+  PrefetchBmmSourcePass(const PrefetchBmmSourcePass &pass)
+      : PassWrapper(pass) {}
+
+  Option<unsigned> argumentIndex{
+      *this, "argument-index",
+      llvm::cl::desc("Original unranked BMM matrix argument to prefetch"),
+      llvm::cl::init(0)};
+  Option<int64_t> distance{
+      *this, "distance",
+      llvm::cl::desc("Prefetch distance in outer K-loop iterations"),
+      llvm::cl::init(8)};
+  Option<unsigned> locality{
+      *this, "locality",
+      llvm::cl::desc("LLVM/MLIR locality hint in the range 0..3"),
+      llvm::cl::init(2)};
+  Option<unsigned> issueEvery{
+      *this, "issue-every",
+      llvm::cl::desc("Issue prefetches every N outer K-loop iterations"),
+      llvm::cl::init(8)};
+  Option<int64_t> expectedRows{
+      *this, "expected-rows",
+      llvm::cl::desc("Required source tile row count"), llvm::cl::init(4)};
+  Option<int64_t> expectedTileK{
+      *this, "expected-tile-k",
+      llvm::cl::desc("Required source tile reduction width"),
+      llvm::cl::init(4)};
+
+  StringRef getArgument() const final { return "prefetch-bmm-source"; }
+  StringRef getDescription() const final {
+    return "Prefetch a guarded future tile from an original BMM source";
+  }
+
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry
+        .insert<arith::ArithDialect, memref::MemRefDialect, scf::SCFDialect>();
+  }
+
+  static Value createIntegerLikeConstant(OpBuilder &builder, Location loc,
+                                         Type type, int64_t value) {
+    if (isa<IndexType>(type))
+      return builder.create<arith::ConstantIndexOp>(loc, value);
+    auto integerType = dyn_cast<IntegerType>(type);
+    if (!integerType)
+      return {};
+    return builder.create<arith::ConstantOp>(
+        loc, type, builder.getIntegerAttr(integerType, value));
+  }
+
+  void runOnOperation() override {
+    func::FuncOp function = getOperation();
+    if (distance <= 0) {
+      function.emitError("prefetch distance must be positive");
+      return signalPassFailure();
+    }
+    if (locality > 3) {
+      function.emitError("prefetch locality must be in the range 0..3");
+      return signalPassFailure();
+    }
+    if (issueEvery == 0) {
+      function.emitError("prefetch issue-every must be positive");
+      return signalPassFailure();
+    }
+    if (expectedRows <= 0 || expectedTileK <= 0) {
+      function.emitError("expected tile dimensions must be positive");
+      return signalPassFailure();
+    }
+    if (argumentIndex >= function.getNumArguments()) {
+      function.emitError("prefetch source argument index is out of range");
+      return signalPassFailure();
+    }
+
+    Value sourceArgument = function.getArgument(argumentIndex);
+    if (!isa<UnrankedMemRefType>(sourceArgument.getType())) {
+      function.emitError(
+          "prefetch-bmm-source requires an original unranked memref argument");
+      return signalPassFailure();
+    }
+
+    struct Candidate {
+      scf::ForOp loop;
+      memref::ReinterpretCastOp view;
+      Value currentOffset;
+      MemRefType viewType;
+    };
+    SmallVector<Candidate> candidates;
+
+    function.walk([&](scf::ForOp loop) {
+      for (Operation &operation : loop.getBody()->without_terminator()) {
+        auto view = dyn_cast<memref::ReinterpretCastOp>(operation);
+        if (!view || view.getSource() != sourceArgument)
+          continue;
+
+        auto viewType = view.getResult().getType();
+        if (viewType.getRank() != 2 || !viewType.hasStaticShape() ||
+            viewType.getShape()[0] != expectedRows ||
+            viewType.getShape()[1] != expectedTileK)
+          continue;
+
+        bool copiedToPrivateTile = llvm::any_of(
+            view.getResult().getUsers(), [&](Operation *user) {
+              auto copy = dyn_cast<memref::CopyOp>(user);
+              return copy && copy.getSource() == view.getResult() &&
+                     copy.getTarget().getDefiningOp<memref::AllocOp>();
+            });
+        if (!copiedToPrivateTile)
+          continue;
+
+        OpFoldResult mixedOffset = view.getConstifiedMixedOffset();
+        Value currentOffset = mixedOffset.dyn_cast<Value>();
+        if (!currentOffset || !isa<IndexType>(currentOffset.getType()))
+          continue;
+
+        candidates.push_back({loop, view, currentOffset, viewType});
+      }
+    });
+
+    if (candidates.size() != 1) {
+      function.emitError()
+          << "expected exactly one original-source 2-D BMM tile feeding a "
+             "private memref.copy for argument "
+          << argumentIndex << ", found " << candidates.size();
+      return signalPassFailure();
+    }
+
+    Candidate candidate = candidates.front();
+    OpBuilder builder(candidate.view);
+    Location loc = candidate.view.getLoc();
+    Type ivType = candidate.loop.getInductionVar().getType();
+    Value distanceValue =
+        createIntegerLikeConstant(builder, loc, ivType, distance);
+    Value frequencyValue =
+        createIntegerLikeConstant(builder, loc, ivType, issueEvery);
+    Value zeroValue = createIntegerLikeConstant(builder, loc, ivType, 0);
+    if (!distanceValue || !frequencyValue || !zeroValue) {
+      function.emitError("outer K-loop induction type must be index or integer");
+      return signalPassFailure();
+    }
+
+    Value iterationDelta = builder.create<arith::MulIOp>(
+        loc, candidate.loop.getStep(), distanceValue);
+    Value futureIteration = builder.create<arith::AddIOp>(
+        loc, candidate.loop.getInductionVar(), iterationDelta);
+    Value inBounds = builder.create<arith::CmpIOp>(
+        loc, arith::CmpIPredicate::ult, futureIteration,
+        candidate.loop.getUpperBound());
+
+    Value elapsed = builder.create<arith::SubIOp>(
+        loc, candidate.loop.getInductionVar(), candidate.loop.getLowerBound());
+    Value ordinal =
+        builder.create<arith::DivUIOp>(loc, elapsed, candidate.loop.getStep());
+    Value remainder =
+        builder.create<arith::RemUIOp>(loc, ordinal, frequencyValue);
+    Value onFrequency = builder.create<arith::CmpIOp>(
+        loc, arith::CmpIPredicate::eq, remainder, zeroValue);
+    Value shouldIssue =
+        builder.create<arith::AndIOp>(loc, inBounds, onFrequency);
+
+    Value sourceElementDelta = builder.create<arith::ConstantIndexOp>(
+        loc, distance * expectedTileK);
+    Value futureOffset = builder.create<arith::AddIOp>(
+        loc, candidate.currentOffset, sourceElementDelta);
+
+    SmallVector<OpFoldResult> sizes =
+        candidate.view.getConstifiedMixedSizes();
+    SmallVector<OpFoldResult> strides =
+        candidate.view.getConstifiedMixedStrides();
+    auto guard = builder.create<scf::IfOp>(
+        loc, shouldIssue, [&](OpBuilder &nestedBuilder, Location nestedLoc) {
+          auto futureView = nestedBuilder.create<memref::ReinterpretCastOp>(
+              nestedLoc, candidate.viewType, sourceArgument, futureOffset,
+              sizes, strides);
+          futureView->setAttr("prefetch.source_argument",
+                              nestedBuilder.getI64IntegerAttr(argumentIndex));
+          futureView->setAttr("prefetch.distance_iterations",
+                              nestedBuilder.getI64IntegerAttr(distance));
+
+          Value column = nestedBuilder.create<arith::ConstantIndexOp>(
+              nestedLoc, 0);
+          for (int64_t row = 0; row < expectedRows; ++row) {
+            Value rowValue = nestedBuilder.create<arith::ConstantIndexOp>(
+                nestedLoc, row);
+            auto prefetch = nestedBuilder.create<memref::PrefetchOp>(
+                nestedLoc, futureView.getResult(),
+                ValueRange{rowValue, column}, /*isWrite=*/false,
+                static_cast<uint32_t>(locality), /*isDataCache=*/true);
+            (void)prefetch;
+          }
+          nestedBuilder.create<scf::YieldOp>(nestedLoc);
+        });
+    guard->setAttr("prefetch.issue_every",
+                   builder.getI64IntegerAttr(issueEvery));
+  }
+};
+
 void registerPrefetchPasses() {
   PassRegistration<PrefetchSnapshotPass>();
   PassRegistration<AnalyzeGemmRhsPass>();
   PassRegistration<PrefetchMaterializePass>();
   PassRegistration<PrefetchGemmRhsPass>();
+  PassRegistration<PrefetchBmmSourcePass>();
 }
 
 } // namespace
