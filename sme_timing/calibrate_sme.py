@@ -132,7 +132,11 @@ def build_and_run(groups: int) -> Dict[str, Any]:
         if measured.returncode != 0:
             hint = ""
             if measured.returncode < 0:
-                hint = " (the OS or CPU may not permit SME or CNTVCT_EL0)"
+                hint = (
+                    " (CNTVCT fallback also failed; the SME/RDSVL/FMOPA execution path is unavailable)"
+                    if counter_sigill
+                    else " (the OS or CPU may not permit SME or CNTVCT_EL0)"
+                )
             raise RuntimeError(
                 f"SME timing probe failed with exit {measured.returncode}{hint}:\n{measured.stderr}"
             )
