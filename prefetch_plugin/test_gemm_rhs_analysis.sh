@@ -51,5 +51,8 @@ assert feature["rhs_row_bytes"] == 512
 assert feature["vector_read_bytes"] == 32
 assert feature["loop_trip_count"] == 64
 assert feature["bytes_advanced_per_loop_iteration"] == 512
+assert feature["lineage"]["writer_operation_count"] == 1
+assert feature["lineage"]["memref_copy_writer_count"] == 1
+assert feature["lineage"]["source_argument_indices"] == [0]
 print("PASS: extracted numeric GEMM RHS kernel profile")
 PY

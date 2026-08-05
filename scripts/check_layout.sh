@@ -25,6 +25,7 @@ required=(
   "prefetch_plugin/prefetch_plan_options.py"
   "prefetch_plugin/onsite_extract_gemm_profile.sh"
   "prefetch_plugin/gemm-kernel-profile-v1.schema.json"
+  "prefetch_plugin/summarize_gemm_profile.py"
   "hardware_calibration/run_calibration.sh"
   "cost_model/plan_gemm_rhs.py"
   "cost_model/prefetch-plan-v1.1.schema.json"

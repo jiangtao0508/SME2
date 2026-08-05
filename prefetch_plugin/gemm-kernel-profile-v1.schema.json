@@ -19,7 +19,7 @@
           "candidate_id", "source_rows", "source_columns", "element_bits",
           "element_bytes", "source_allocation_bytes", "rhs_row_bytes", "vector_read_bytes", "loop_lower",
           "loop_upper", "loop_step", "loop_trip_count",
-          "subview_reduction_extent", "subview_column_extent",
+          "subview_reduction_extent", "subview_column_extent", "lineage",
           "bytes_advanced_per_loop_iteration"
         ],
         "properties": {
@@ -37,7 +37,30 @@
           "loop_trip_count": {"type": ["integer", "null"], "minimum": 1},
           "subview_reduction_extent": {"type": ["integer", "null"], "minimum": 1},
           "subview_column_extent": {"type": ["integer", "null"], "minimum": 1},
-          "bytes_advanced_per_loop_iteration": {"type": ["integer", "null"], "minimum": 1}
+          "bytes_advanced_per_loop_iteration": {"type": ["integer", "null"], "minimum": 1},
+          "lineage": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "writer_operation_count", "memref_copy_writer_count",
+              "vector_transfer_write_count", "memref_store_writer_count",
+              "linalg_writer_count", "source_argument_indices",
+              "source_argument_count"
+            ],
+            "properties": {
+              "writer_operation_count": {"type": "integer", "minimum": 0},
+              "memref_copy_writer_count": {"type": "integer", "minimum": 0},
+              "vector_transfer_write_count": {"type": "integer", "minimum": 0},
+              "memref_store_writer_count": {"type": "integer", "minimum": 0},
+              "linalg_writer_count": {"type": "integer", "minimum": 0},
+              "source_argument_indices": {
+                "type": "array",
+                "items": {"type": "integer", "minimum": 0},
+                "uniqueItems": true
+              },
+              "source_argument_count": {"type": "integer", "minimum": 0}
+            }
+          }
         }
       }
     }

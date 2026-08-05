@@ -8,6 +8,7 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Tools/Plugins/PassPlugin.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/Config/llvm-config.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/FileSystem.h"
@@ -17,6 +18,7 @@
 
 #include <algorithm>
 #include <optional>
+#include <set>
 
 using namespace mlir;
 
@@ -80,6 +82,91 @@ static llvm::json::Value optionalInteger(std::optional<int64_t> value) {
   return nullptr;
 }
 
+static Value stripKnownMemrefViews(Value value) {
+  while (Operation *defining = value.getDefiningOp()) {
+    StringRef name = defining->getName().getStringRef();
+    if (name != "memref.subview" && name != "memref.cast" &&
+        name != "memref.reinterpret_cast" && name != "memref.view")
+      break;
+    if (defining->getNumOperands() == 0)
+      break;
+    value = defining->getOperand(0);
+  }
+  return value;
+}
+
+static void collectFunctionArgumentIndices(Value root, func::FuncOp function,
+                                           std::set<int64_t> &indices) {
+  SmallVector<Value> worklist{root};
+  llvm::DenseSet<Value> visited;
+  unsigned traversed = 0;
+  while (!worklist.empty() && traversed++ < 256) {
+    Value value = worklist.pop_back_val();
+    if (!visited.insert(value).second)
+      continue;
+    for (unsigned index = 0; index < function.getNumArguments(); ++index) {
+      if (value == function.getArgument(index)) {
+        indices.insert(index);
+        break;
+      }
+    }
+    if (Operation *defining = value.getDefiningOp())
+      llvm::append_range(worklist, defining->getOperands());
+  }
+}
+
+struct AllocationLineage {
+  int64_t copyWriters = 0;
+  int64_t vectorWriters = 0;
+  int64_t storeWriters = 0;
+  int64_t linalgWriters = 0;
+  std::set<int64_t> sourceArgumentIndices;
+};
+
+static AllocationLineage traceAllocationLineage(Value allocation,
+                                                 func::FuncOp function) {
+  AllocationLineage lineage;
+  function.walk([&](Operation *operation) {
+    StringRef name = operation->getName().getStringRef();
+    std::optional<unsigned> destination;
+    if (name == "memref.copy" && operation->getNumOperands() >= 2) {
+      destination = 1;
+      ++lineage.copyWriters;
+    } else if (name == "vector.transfer_write" &&
+               operation->getNumOperands() >= 2) {
+      destination = 1;
+      ++lineage.vectorWriters;
+    } else if (name == "memref.store" && operation->getNumOperands() >= 2) {
+      destination = 1;
+      ++lineage.storeWriters;
+    } else if (name.starts_with("linalg.") &&
+               operation->getNumOperands() >= 1) {
+      destination = operation->getNumOperands() - 1;
+      ++lineage.linalgWriters;
+    } else {
+      return;
+    }
+
+    if (stripKnownMemrefViews(operation->getOperand(*destination)) != allocation) {
+      if (name == "memref.copy")
+        --lineage.copyWriters;
+      else if (name == "vector.transfer_write")
+        --lineage.vectorWriters;
+      else if (name == "memref.store")
+        --lineage.storeWriters;
+      else
+        --lineage.linalgWriters;
+      return;
+    }
+    for (unsigned index = 0; index < operation->getNumOperands(); ++index) {
+      if (index != *destination)
+        collectFunctionArgumentIndices(operation->getOperand(index), function,
+                                       lineage.sourceArgumentIndices);
+    }
+  });
+  return lineage;
+}
+
 struct AnalyzeGemmRhsPass
     : public PassWrapper<AnalyzeGemmRhsPass, OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(AnalyzeGemmRhsPass)
@@ -108,6 +195,7 @@ struct AnalyzeGemmRhsPass
     int64_t candidateId = 0;
     module.walk([&](scf::ForOp loop) {
       std::optional<llvm::json::Object> bestFeature;
+      Value bestAllocation;
       int64_t bestColumns = -1;
       for (Operation &operation : loop.getBody()->getOperations()) {
         auto subview = dyn_cast<memref::SubViewOp>(operation);
@@ -184,9 +272,28 @@ struct AnalyzeGemmRhsPass
                   : llvm::json::Value(nullptr)},
         };
         bestColumns = columns;
+        bestAllocation = subview.getSource();
         bestFeature = std::move(feature);
       }
       if (bestFeature) {
+        func::FuncOp function = loop->getParentOfType<func::FuncOp>();
+        AllocationLineage lineage = traceAllocationLineage(bestAllocation, function);
+        llvm::json::Array argumentIndices;
+        for (int64_t index : lineage.sourceArgumentIndices)
+          argumentIndices.push_back(index);
+        int64_t writerCount = lineage.copyWriters + lineage.vectorWriters +
+                              lineage.storeWriters + lineage.linalgWriters;
+        llvm::json::Object lineageJson{
+            {"writer_operation_count", writerCount},
+            {"memref_copy_writer_count", lineage.copyWriters},
+            {"vector_transfer_write_count", lineage.vectorWriters},
+            {"memref_store_writer_count", lineage.storeWriters},
+            {"linalg_writer_count", lineage.linalgWriters},
+            {"source_argument_indices", std::move(argumentIndices)},
+            {"source_argument_count",
+             static_cast<int64_t>(lineage.sourceArgumentIndices.size())},
+        };
+        (*bestFeature)["lineage"] = std::move(lineageJson);
         (*bestFeature)["candidate_id"] = candidateId++;
         candidates.push_back(std::move(*bestFeature));
       }

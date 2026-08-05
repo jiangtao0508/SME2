@@ -42,4 +42,4 @@ profile="$output_dir/GemmKernelProfile.v1.json"
 python3 -m json.tool "$profile" >/dev/null
 echo "PASS: extracted numeric GEMM RHS features without changing the input IR"
 echo "GEMM_KERNEL_PROFILE=$profile"
-
+python3 "$plugin_dir/summarize_gemm_profile.py" "$profile"
