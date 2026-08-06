@@ -227,6 +227,21 @@ bash scripts/onsite_collect_model_inputs.sh \
 该工具只改写输出目录内的 IR 副本，不修改现场 LLVM、Triton、
 Triton-Shared、FlagGems 源码或安装文件。
 
+## Kunpeng MM + SME 主线
+
+性能研究主线现转向 Kunpeng MM 的宏块 Autotune 与 SVL-aware SME lowering。
+先捕获目标 shape 实际选中的 `256³` 或 `8³` 配置：
+
+```bash
+bash scripts/capture_selected_kunpeng_mm.sh \
+  /path/to/triton-cpu /path/to/onsite-output \
+  8192 2048 64 bfloat16
+```
+
+脚本在第二个进程中只编译胜出配置，保证生成的 dump 对应实际执行版本。后续
+预取模型与 pass 以该 MM IR 为输入，不复用 BMM 的固定参数。详见
+[docs/MM_SME_PREFETCH_DIRECTION.md](docs/MM_SME_PREFETCH_DIRECTION.md)。
+
 ## 一屏查看现场结论
 
 不阅读长报告，自动选择最新一次追踪结果：
