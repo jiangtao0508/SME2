@@ -10,6 +10,23 @@ import pathlib
 import sys
 
 
+def find_autotuner(kernel_entry):
+    """Unwrap FlagGems LibEntry/heuristics wrappers to the LibTuner."""
+    current = kernel_entry
+    seen = set()
+    chain = []
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        chain.append(type(current).__name__)
+        if hasattr(current, "configs") and callable(getattr(current, "run", None)):
+            return current
+        current = getattr(current, "fn", None)
+    raise RuntimeError(
+        "could not find the MM autotuner through the FlagGems wrapper chain: "
+        + " -> ".join(chain)
+    )
+
+
 def config_record(config, timings=None):
     record = {
         "meta": dict(config.kwargs),
@@ -46,7 +63,7 @@ def main() -> int:
         )
 
     mm_module = importlib.import_module("flag_gems.ops.mm")
-    tuner = mm_module.mm_kernel_general
+    tuner = find_autotuner(mm_module.mm_kernel_general)
     expected = {(256, 256, 256), (8, 8, 8)}
     observed = {
         (

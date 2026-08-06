@@ -39,6 +39,7 @@ required=(
   "tests/test_source_a_prefetch_audit.py"
   "scripts/prepare_source_a_prefetch.sh"
   "prefetch_plugin/onsite_mm_select.py"
+  "tests/test_onsite_mm_select.py"
   "prefetch_plugin/onsite_capture_selected_mm.sh"
   "scripts/capture_selected_kunpeng_mm.sh"
   "docs/MM_SME_PREFETCH_DIRECTION.md"
