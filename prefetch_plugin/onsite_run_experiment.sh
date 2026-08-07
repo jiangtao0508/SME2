@@ -59,7 +59,7 @@ if [[ -z "${COMPILER_PY:-}" ]]; then
 fi
 
 if [[ -z "${FLAGGEMS_DIR:-}" ]]; then
-  FLAGGEMS_DIR="$(find /home/share "$HOME" -maxdepth 4 -type d -name FlagGems 2>/dev/null | head -1 || true)"
+  FLAGGEMS_DIR="$(find /home/share "$HOME" -maxdepth 5 -type d -name FlagGems 2>/dev/null | head -1 || true)"
 fi
 
 if [[ -z "${DUMP_DIR:-}" ]]; then
@@ -199,7 +199,7 @@ run_variant() {
     (
       cd "$FLAGGEMS_DIR"
       TRITON_ALWAYS_COMPILE=1 TRITON_KERNEL_OVERRIDE=1 TRITON_OVERRIDE_DIR="$override_dir" \
-        ${PYTEST_CMD:-pytest -s test/test_blas_ops_mem.py::test_accuracy_bmm_membound[dtype2-8192-64-2048]}
+        ${PYTEST_CMD:-pytest -s tests/test_blas_ops_mem.py::test_accuracy_bmm_membound[dtype2-8192-64-2048]}
     ) 2>&1 | tee "$RUN_DIR/$CURRENT_STEP.log"
   else
     echo "FLAGGEMS_DIR 未设置，跳过 pytest 正确性" | tee "$RUN_DIR/$CURRENT_STEP.log"
