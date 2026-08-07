@@ -39,9 +39,9 @@ if [[ ! -d $1 ]]; then
 fi
 
 override_dir=$(cd "$1" && pwd -P)
-llir_count=$(find "$override_dir" -type f -name '*.llir' | wc -l | tr -d '[:space:]')
-if [[ $llir_count != 1 ]]; then
-  echo "ERROR: expected exactly one .llir below the override directory; found $llir_count" >&2
+llir_file=$(find "$override_dir" -type f -name '*.llir' | head -1)
+if [[ -z "$llir_file" ]]; then
+  echo "ERROR: no .llir found below the override directory: $override_dir" >&2
   exit 2
 fi
 
@@ -72,6 +72,49 @@ fi
 run_root=$(mktemp -d "${TMPDIR:-/tmp}/sme-prefetch-bench.XXXXXX")
 trap 'rm -rf -- "$run_root"' EXIT
 
+# Triton's kernel override looks up $TRITON_OVERRIDE_DIR/<src-hash>/kernel.llir.
+# The src hash is only known after compiling the kernel once, so probe it via
+# the TRITON_KERNEL_DUMP mechanism (dump dir is also keyed by src hash), then
+# lay out the override payload under the hash subdirectory.
+probe_root="$run_root/probe"
+probe_cache="$run_root/probe_cache"
+(
+  unset TRITON_KERNEL_OVERRIDE TRITON_OVERRIDE_DIR
+  export TRITON_ALWAYS_COMPILE=1
+  export TRITON_KERNEL_DUMP=1
+  export TRITON_DUMP_DIR="$probe_root"
+  export TRITON_CACHE_DIR="$probe_cache"
+  python - <<'PY'
+import os
+
+import flag_gems
+import torch
+
+batch = int(os.environ["SME_BENCH_BATCH"])
+m = int(os.environ["SME_BENCH_M"])
+n = int(os.environ["SME_BENCH_N"])
+k = int(os.environ["SME_BENCH_K"])
+dtype = getattr(torch, os.environ["SME_BENCH_DTYPE"])
+
+a = torch.randn((batch, m, k), dtype=dtype, device=flag_gems.device)
+b = torch.randn((batch, k, n), dtype=dtype, device=flag_gems.device)
+with flag_gems.use_gems():
+    torch.bmm(a, b)  # compile only; source hash lands in TRITON_DUMP_DIR/<hash>/
+PY
+) >/dev/null 2>&1
+
+src_hash="$(basename "$(ls -dt "$probe_root"/*/ 2>/dev/null | head -1)" 2>/dev/null || true)"
+if [[ -z "$src_hash" || ! -d "$probe_root/$src_hash" ]]; then
+  echo "ERROR: could not determine the kernel source hash from $probe_root" >&2
+  echo "       confirm TRITON_KERNEL_DUMP is supported by the onsite Triton" >&2
+  exit 1
+fi
+override_structure="$run_root/override"
+mkdir -p "$override_structure/$src_hash"
+cp "$llir_file" "$override_structure/$src_hash/kernel.llir"
+echo "src_hash: $src_hash"
+echo "override payload: $override_structure/$src_hash/kernel.llir"
+
 run_case() {
   local label=$1
   local log_file=$2
@@ -85,7 +128,7 @@ run_case() {
       unset TRITON_KERNEL_OVERRIDE TRITON_OVERRIDE_DIR
     else
       export TRITON_KERNEL_OVERRIDE=1
-      export TRITON_OVERRIDE_DIR="$override_dir"
+      export TRITON_OVERRIDE_DIR="$override_structure"
     fi
 
     export SME_BENCH_LABEL=$label

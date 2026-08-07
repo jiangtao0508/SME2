@@ -192,7 +192,49 @@ run_variant() {
   local llir_dir="$PREPARE_ROOT/$name/final"
   local override_dir="$RUN_DIR/override/$name"
   mkdir -p "$override_dir"
-  cp "$llir_dir/kernel.llir" "$override_dir/kernel.llir"
+  export SME_BENCH_BATCH=${SME_BENCH_BATCH:-4}
+  export SME_BENCH_M=${SME_BENCH_M:-8192}
+  export SME_BENCH_N=${SME_BENCH_N:-2048}
+  export SME_BENCH_K=${SME_BENCH_K:-64}
+  export SME_BENCH_DTYPE=${SME_BENCH_DTYPE:-bfloat16}
+
+  # Triton override requires $TRITON_OVERRIDE_DIR/<src-hash>/kernel.llir.
+  # Probe the src hash by compiling once with TRITON_KERNEL_DUMP (dump dir is
+  # keyed by src hash), then lay out the payload under the hash subdirectory.
+  local probe_root="$RUN_DIR/probe_$name"
+  local probe_cache="$RUN_DIR/probe_cache_$name"
+  (
+    unset TRITON_KERNEL_OVERRIDE TRITON_OVERRIDE_DIR
+    export TRITON_ALWAYS_COMPILE=1 TRITON_KERNEL_DUMP=1
+    export TRITON_DUMP_DIR="$probe_root" TRITON_CACHE_DIR="$probe_cache"
+    python - <<'PY'
+import os
+
+import flag_gems
+import torch
+
+batch = int(os.environ["SME_BENCH_BATCH"])
+m = int(os.environ["SME_BENCH_M"])
+n = int(os.environ["SME_BENCH_N"])
+k = int(os.environ["SME_BENCH_K"])
+dtype = getattr(torch, os.environ["SME_BENCH_DTYPE"])
+a = torch.randn((batch, m, k), dtype=dtype, device=flag_gems.device)
+b = torch.randn((batch, k, n), dtype=dtype, device=flag_gems.device)
+with flag_gems.use_gems():
+    torch.bmm(a, b)
+PY
+  ) >/dev/null 2>&1 || true
+  local src_hash
+  src_hash="$(basename "$(ls -dt "$probe_root"/*/ 2>/dev/null | head -1)" 2>/dev/null || true)"
+  if [[ -z "$src_hash" ]]; then
+    echo "WARN: 未能探测 kernel src hash（TRITON_KERNEL_DUMP 可能不被支持）" \
+      | tee "$RUN_DIR/$CURRENT_STEP.log"
+  else
+    mkdir -p "$override_dir/$src_hash"
+    cp "$llir_dir/kernel.llir" "$override_dir/$src_hash/kernel.llir"
+    echo "src_hash: $src_hash (override=$override_dir/$src_hash/kernel.llir)" \
+      | tee "$RUN_DIR/$CURRENT_STEP.log"
+  fi
 
   echo "[5/7] correctness: $name"
   if [[ -n "${FLAGGEMS_DIR:-}" && -d "${FLAGGEMS_DIR:-}" ]]; then
