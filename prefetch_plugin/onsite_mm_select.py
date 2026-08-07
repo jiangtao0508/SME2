@@ -41,18 +41,34 @@ def config_record(config, timings=None):
     return record
 
 
+def force_selected_config(tuner, selection):
+    """Restrict a LibTuner to the one config recorded by select mode."""
+    selected = selection["selected"]
+    wanted = selected["meta"]
+    matches = [config for config in tuner.configs if config.kwargs == wanted]
+    if len(matches) != 1:
+        raise RuntimeError(f"selected config did not match exactly once: {wanted}")
+    tuner.configs = matches
+    return matches[0]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("select", "capture"))
+    parser.add_argument("mode", choices=("select", "capture", "verify", "benchmark"))
     parser.add_argument("--m", type=int, required=True)
     parser.add_argument("--n", type=int, required=True)
     parser.add_argument("--k", type=int, required=True)
     parser.add_argument("--dtype", choices=("bfloat16", "float16"), default="bfloat16")
     parser.add_argument("--config-json", type=pathlib.Path, required=True)
+    parser.add_argument("--warmup", type=int, default=5)
+    parser.add_argument("--rep", type=int, default=20)
+    parser.add_argument("--label", choices=("baseline", "prefetch"), default="baseline")
     args = parser.parse_args()
 
     if min(args.m, args.n, args.k) <= 0:
         parser.error("M, N and K must be positive")
+    if args.warmup <= 0 or args.rep <= 0:
+        parser.error("warmup and rep must be positive")
 
     import torch
     import flag_gems
@@ -79,18 +95,41 @@ def main() -> int:
             f"observed={sorted(observed)}"
         )
 
-    if args.mode == "capture":
-        selected = json.loads(args.config_json.read_text(encoding="utf-8"))["selected"]
-        wanted = selected["meta"]
-        matches = [config for config in tuner.configs if config.kwargs == wanted]
-        if len(matches) != 1:
-            raise RuntimeError(f"selected config did not match exactly once: {wanted}")
-        tuner.configs = matches
+    wanted_config = None
+    if args.mode != "select":
+        selection = json.loads(args.config_json.read_text(encoding="utf-8"))
+        wanted_config = force_selected_config(tuner, selection)
 
     dtype = getattr(torch, args.dtype)
     torch.manual_seed(0)
     a = torch.randn((args.m, args.k), dtype=dtype, device=flag_gems.device)
     b = torch.randn((args.k, args.n), dtype=dtype, device=flag_gems.device)
+    if args.mode == "verify":
+        from flag_gems.testing import assert_close
+
+        reference = torch.mm(a, b)
+        with flag_gems.use_gems():
+            result = torch.mm(a, b)
+        if result.shape != (args.m, args.n) or not torch.isfinite(result).all():
+            raise RuntimeError("FlagGems MM produced an invalid result")
+        assert_close(result, reference, dtype, reduce_dim=args.k)
+        print("MM_CORRECTNESS=PASS")
+        return 0
+
+    if args.mode == "benchmark":
+        import triton
+
+        with flag_gems.use_gems():
+            fn = lambda: torch.mm(a, b)
+            result = fn()
+            if result.shape != (args.m, args.n) or not torch.isfinite(result).all():
+                raise RuntimeError("FlagGems MM produced an invalid result")
+            latency = triton.testing.do_bench(
+                fn, warmup=args.warmup, rep=args.rep, return_mode="median"
+            )
+        print(f"MM_{args.label.upper()}_LATENCY_MS={float(latency):.6f}")
+        return 0
+
     with flag_gems.use_gems():
         result = torch.mm(a, b)
     if result.shape != (args.m, args.n) or not torch.isfinite(result).all():
@@ -115,7 +154,7 @@ def main() -> int:
         )
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
-        if best.kwargs != wanted:
+        if best.kwargs != wanted_config.kwargs:
             raise RuntimeError("capture did not execute the selected config")
         print(f"CAPTURED_CONFIG={json.dumps(config_record(best), sort_keys=True)}")
     return 0

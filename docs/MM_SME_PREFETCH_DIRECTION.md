@@ -32,3 +32,30 @@ bash scripts/capture_selected_kunpeng_mm.sh \
 
 不要直接把 BMM 的 `argument-index=0, distance=8, issue-every=8` 套到 MM。MM 的
 宏块、尾块、stride 和 bufferize 结构均需由本次真实 dump 确认。
+
+## 固定已选配置的第一版现场闭环
+
+当数值 profile 显示 RHS 是大于 L1 的 private packed allocation 时，第一版实验
+只验证 packed RHS 的 L2-to-L1 回填，不把它表述为原始矩阵的内存预取。生成一个
+roundtrip control 和一个 `distance=8/locality=L1/coverage=1/issue_every=1` 候选：
+
+```bash
+bash prefetch_plugin/onsite_prepare_selected_mm.sh \
+  "$LLVM_INSTALL_DIR" "$TRITON_SHARED_OPT" "$COMPILER_PY" \
+  "$MM_00" "$MM_OUTPUT"
+```
+
+随后使用捕获阶段的 `selected_config.json` 固定同一 `256^3` 配置。roundtrip 与
+prefetch 都分别跑两种顺序；每次脚本内部都会与 native baseline 配对：
+
+```bash
+for payload in "$MM_ROUNDTRIP_LLIR" "$MM_PREFETCH_LLIR"; do
+  for order in baseline-first prefetch-first; do
+    SME_BENCH_ORDER="$order" bash prefetch_plugin/onsite_benchmark_selected_mm.sh \
+      "$TRITON_ROOT" "$SELECTED_CONFIG" "$payload" "$MM_BENCH_OUTPUT"
+  done
+done
+```
+
+benchmark 会重新探测 selected config 的 source hash，要求正确性通过，并分别确认
+native baseline 未 override、候选确实命中 `<src-hash>/mm_kernel_general.llir`。
