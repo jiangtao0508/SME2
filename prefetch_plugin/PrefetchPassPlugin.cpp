@@ -847,10 +847,47 @@ struct PrefetchBmmSourcePass
     });
 
     if (candidates.size() != 1) {
+      // Diagnose why the strict source-A structure did not match, so an
+      // unexpected onsite IR shape can be fixed without dumping the file.
+      int64_t loopCount = 0;
+      int64_t reinterpretCount = 0;
+      int64_t fromSourceArgCount = 0;
+      int64_t staticTileCount = 0;
+      int64_t copyToAllocCount = 0;
+      function.walk([&](scf::ForOp loop) {
+        ++loopCount;
+        for (Operation &operation : loop.getBody()->without_terminator()) {
+          auto view = dyn_cast<memref::ReinterpretCastOp>(operation);
+          if (!view)
+            continue;
+          ++reinterpretCount;
+          if (view.getSource() == sourceArgument)
+            ++fromSourceArgCount;
+          auto viewType = view.getResult().getType();
+          if (viewType.getRank() == 2 && viewType.hasStaticShape() &&
+              viewType.getShape()[0] == expectedRows &&
+              viewType.getShape()[1] == expectedTileK)
+            ++staticTileCount;
+          bool copiedToAlloc = llvm::any_of(
+              view.getResult().getUsers(), [&](Operation *user) {
+                auto copy = dyn_cast<memref::CopyOp>(user);
+                return copy && copy.getSource() == view.getResult() &&
+                       copy.getTarget().getDefiningOp<memref::AllocOp>();
+              });
+          if (copiedToAlloc)
+            ++copyToAllocCount;
+        }
+      });
       function.emitError()
           << "expected exactly one original-source 2-D BMM tile feeding a "
              "private memref.copy for argument "
-          << argumentIndex << ", found " << candidates.size();
+          << argumentIndex.getValue() << ", found " << candidates.size()
+          << "; diagnostic: scf_for_loops=" << loopCount
+          << " reinterpret_cast=" << reinterpretCount
+          << " from_source_arg=" << fromSourceArgCount
+          << " static_" << expectedRows.getValue() << "x"
+          << expectedTileK.getValue() << "=" << staticTileCount
+          << " copy_to_alloc=" << copyToAllocCount;
       return signalPassFailure();
     }
 
