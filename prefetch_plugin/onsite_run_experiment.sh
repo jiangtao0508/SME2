@@ -17,34 +17,59 @@ if [[ $# -ge 1 && -f "$1" ]]; then
   set -a; source "$1"; set +a
 fi
 
-probe() {
-  local var=$1
-  shift
-  if [[ -z "${!var:-}" ]]; then
-    for candidate in "$@"; do
-      if [[ -e "$candidate" ]]; then
-        eval "$var=\$candidate"
-        break
-      fi
-    done
+# 现场 env.sh 已导出的变量优先（TRITON_SHARED_OPT_PATH 可能是目录或文件）
+if [[ -z "${TRITON_SHARED_OPT:-}" && -n "${TRITON_SHARED_OPT_PATH:-}" ]]; then
+  _p="${TRITON_SHARED_OPT_PATH%/}"
+  if [[ -d "$_p" ]]; then
+    if [[ -x "$_p/triton-shared-opt" ]]; then
+      TRITON_SHARED_OPT="$_p/triton-shared-opt"
+    else
+      TRITON_SHARED_OPT="$(find "$_p" -maxdepth 2 -name triton-shared-opt -type f 2>/dev/null | head -1)"
+    fi
+  else
+    TRITON_SHARED_OPT="$_p"
   fi
+fi
+
+find_in() {
+  local name=$1
+  shift
+  local root found
+  for root in "$@"; do
+    [[ -d "$root" ]] || continue
+    found="$(find "$root" -name "$name" -type f 2>/dev/null | head -1)"
+    [[ -n "$found" ]] && { echo "$found"; return 0; }
+  done
+  return 1
 }
 
-probe LLVM_INSTALL_DIR \
-  /home/share/llvm20/llvm-project/install
-probe TRITON_SHARED_OPT \
-  /home/share/triton/triton-cpu/python/build/cmake.linux_aarch64-cpython-3.11/third_party/triton_shared/tools/triton-shared-opt/triton-shared-opt
-probe COMPILER_PY \
-  /home/share/triton/triton-cpu/triton-shared/backend/compiler.py
-probe FLAGGEMS_DIR \
-  /home/share/FlagGems /home/share/triton/triton-cpu/FlagGems
-probe DUMP_DIR \
-  "$(ls -dt /home/share/dumps/*/bmm_kernel 2>/dev/null | head -1)" \
-  "$(find /home/share -maxdepth 4 -type d -name bmm_kernel 2>/dev/null | head -1)"
+if [[ -z "${TRITON_SHARED_OPT:-}" ]]; then
+  TRITON_SHARED_OPT="$(find_in triton-shared-opt /home/share "$HOME" "$PWD" 2>/dev/null || true)"
+fi
+
+if [[ -z "${LLVM_INSTALL_DIR:-}" ]]; then
+  _mlir_opt="$(find_in mlir-opt /home/share "$HOME" "$PWD" 2>/dev/null || true)"
+  if [[ -n "$_mlir_opt" ]]; then
+    LLVM_INSTALL_DIR="$(dirname "$(dirname "$_mlir_opt")")"
+  fi
+fi
+
+if [[ -z "${COMPILER_PY:-}" ]]; then
+  COMPILER_PY="$(find /home/share "$HOME" -path '*triton-shared/backend/compiler.py' -type f 2>/dev/null | head -1 || true)"
+fi
+
+if [[ -z "${FLAGGEMS_DIR:-}" ]]; then
+  FLAGGEMS_DIR="$(find /home/share "$HOME" -maxdepth 4 -type d -name FlagGems 2>/dev/null | head -1 || true)"
+fi
+
+if [[ -z "${DUMP_DIR:-}" ]]; then
+  DUMP_DIR="$(find /home/share "$HOME" -type d -name bmm_kernel 2>/dev/null | head -1 || true)"
+fi
 
 for v in LLVM_INSTALL_DIR TRITON_SHARED_OPT COMPILER_PY; do
   if [[ -z "${!v:-}" || ! -e "${!v}" ]]; then
-    echo "ERROR: $v is not set or does not exist: ${!v:-}" >&2
+    echo "ERROR: $v 未找到。请先 source 现场 env.sh（会导出 TRITON_SHARED_OPT_PATH/LLVM 路径），" >&2
+    echo "       或在 site.env 里显式填写 $v（示例见 site.env.example）。" >&2
     exit 2
   fi
 done
