@@ -231,8 +231,10 @@ PY
       | tee "$RUN_DIR/$CURRENT_STEP.log"
   else
     mkdir -p "$override_dir/$src_hash"
-    cp "$llir_dir/kernel.llir" "$override_dir/$src_hash/kernel.llir"
-    echo "src_hash: $src_hash (override=$override_dir/$src_hash/kernel.llir)" \
+    override_name="$(sed -n 's/^define[[:space:]]*void[[:space:]]*@\([A-Za-z0-9_]*\).*/\1/p' "$llir_dir/kernel.llir" | head -1)"
+    override_name="${override_name:-bmm_kernel}"
+    cp "$llir_dir/kernel.llir" "$override_dir/$src_hash/$override_name.llir"
+    echo "src_hash: $src_hash (override=$override_dir/$src_hash/$override_name.llir)" \
       | tee "$RUN_DIR/$CURRENT_STEP.log"
   fi
 

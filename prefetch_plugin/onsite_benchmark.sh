@@ -111,9 +111,11 @@ if [[ -z "$src_hash" || ! -d "$probe_root/$src_hash" ]]; then
 fi
 override_structure="$run_root/override"
 mkdir -p "$override_structure/$src_hash"
-cp "$llir_file" "$override_structure/$src_hash/kernel.llir"
+override_name="$(sed -n 's/^define[[:space:]]*void[[:space:]]*@\([A-Za-z0-9_]*\).*/\1/p' "$llir_file" | head -1)"
+override_name="${override_name:-bmm_kernel}"
+cp "$llir_file" "$override_structure/$src_hash/$override_name.llir"
 echo "src_hash: $src_hash"
-echo "override payload: $override_structure/$src_hash/kernel.llir"
+echo "override payload: $override_structure/$src_hash/$override_name.llir"
 
 run_case() {
   local label=$1
