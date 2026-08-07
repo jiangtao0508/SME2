@@ -4,11 +4,12 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Tools/Plugins/PassPlugin.h"
-#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Config/llvm-config.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/FileSystem.h"
@@ -199,7 +200,7 @@ struct AllocationLineage {
 };
 
 static AllocationLineage traceAllocationLineage(Value allocation,
-                                                 func::FuncOp function) {
+                                                func::FuncOp function) {
   AllocationLineage lineage;
   function.walk([&](Operation *operation) {
     StringRef name = operation->getName().getStringRef();
@@ -222,7 +223,8 @@ static AllocationLineage traceAllocationLineage(Value allocation,
       return;
     }
 
-    if (stripKnownMemrefViews(operation->getOperand(*destination)) != allocation) {
+    if (stripKnownMemrefViews(operation->getOperand(*destination)) !=
+        allocation) {
       if (name == "memref.copy")
         --lineage.copyWriters;
       else if (name == "vector.transfer_write")
@@ -273,7 +275,8 @@ struct AnalyzeGemmRhsPass
 
   StringRef getArgument() const final { return "prefetch-analyze-gemm-rhs"; }
   StringRef getDescription() const final {
-    return "Extract numeric packed GEMM RHS prefetch features without changing IR";
+    return "Extract numeric packed GEMM RHS prefetch features without changing "
+           "IR";
   }
 
   void runOnOperation() override {
@@ -353,12 +356,12 @@ struct AnalyzeGemmRhsPass
             {"loop_upper", optionalInteger(upper)},
             {"loop_step", optionalInteger(step)},
             {"loop_trip_count", optionalInteger(tripCount)},
-            {"subview_reduction_extent",
-             staticSizes.empty() ? llvm::json::Value(nullptr)
-                                 : staticOrNull(staticSizes[0])},
-            {"subview_column_extent",
-             staticSizes.size() < 2 ? llvm::json::Value(nullptr)
-                                    : staticOrNull(staticSizes[1])},
+            {"subview_reduction_extent", staticSizes.empty()
+                                             ? llvm::json::Value(nullptr)
+                                             : staticOrNull(staticSizes[0])},
+            {"subview_column_extent", staticSizes.size() < 2
+                                          ? llvm::json::Value(nullptr)
+                                          : staticOrNull(staticSizes[1])},
             {"bytes_advanced_per_loop_iteration",
              step ? llvm::json::Value(*step * columns * elementBytes)
                   : llvm::json::Value(nullptr)},
@@ -369,7 +372,8 @@ struct AnalyzeGemmRhsPass
       }
       if (bestFeature) {
         func::FuncOp function = loop->getParentOfType<func::FuncOp>();
-        AllocationLineage lineage = traceAllocationLineage(bestAllocation, function);
+        AllocationLineage lineage =
+            traceAllocationLineage(bestAllocation, function);
         llvm::json::Array argumentIndices;
         for (int64_t index : lineage.sourceArgumentIndices)
           argumentIndices.push_back(index);
@@ -711,6 +715,201 @@ struct PrefetchGemmRhsPass
   }
 };
 
+/// Software-pipeline explicit vector reads from packed GEMM operand
+/// allocations.  The first vector is loaded in a prologue, carried as a new
+/// scf.for iter_arg, and the next row is loaded before the current compute.
+/// This is the CPU/SME analogue of TritonGPU's local-load prefetch pipeline;
+/// it is intentionally separate from memref.prefetch/PRFM materialization.
+struct PipelineGemmRhsLoadPass
+    : public PassWrapper<PipelineGemmRhsLoadPass, OperationPass<func::FuncOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(PipelineGemmRhsLoadPass)
+
+  PipelineGemmRhsLoadPass() = default;
+  PipelineGemmRhsLoadPass(const PipelineGemmRhsLoadPass &pass)
+      : PassWrapper(pass) {}
+
+  StringRef getArgument() const final { return "pipeline-gemm-rhs-load"; }
+  StringRef getDescription() const final {
+    return "Software-pipeline packed GEMM operand reads across an scf.for";
+  }
+
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<arith::ArithDialect, scf::SCFDialect>();
+  }
+
+  struct Candidate {
+    scf::ForOp loop;
+    memref::SubViewOp subview;
+    Operation *read = nullptr;
+  };
+
+  static bool availableOutsideLoop(Value value, scf::ForOp loop,
+                                   Operation *allowedSubview = nullptr) {
+    if (value == loop.getInductionVar())
+      return true;
+    if (allowedSubview && value.getDefiningOp() == allowedSubview)
+      return true;
+    if (auto argument = dyn_cast<BlockArgument>(value))
+      return argument.getOwner() != loop.getBody();
+    Operation *defining = value.getDefiningOp();
+    return !defining || !loop->isAncestor(defining);
+  }
+
+  static bool allocationWrittenInLoop(Value allocation, scf::ForOp loop) {
+    bool written = false;
+    loop.walk([&](Operation *operation) {
+      StringRef name = operation->getName().getStringRef();
+      std::optional<unsigned> destination;
+      if (name == "memref.copy" && operation->getNumOperands() >= 2)
+        destination = 1;
+      else if (name == "vector.transfer_write" &&
+               operation->getNumOperands() >= 2)
+        destination = 1;
+      else if (name == "memref.store" && operation->getNumOperands() >= 2)
+        destination = 1;
+      if (destination && stripKnownMemrefViews(
+                             operation->getOperand(*destination)) == allocation)
+        written = true;
+    });
+    return written;
+  }
+
+  static std::optional<Candidate> findCandidate(func::FuncOp function) {
+    std::optional<Candidate> result;
+    function.walk([&](scf::ForOp loop) -> WalkResult {
+      auto lower = constantIndex(loop.getLowerBound());
+      auto upper = constantIndex(loop.getUpperBound());
+      auto step = constantIndex(loop.getStep());
+      if (!lower || !upper || !step || *step <= 0 || *upper <= *lower)
+        return WalkResult::advance();
+
+      for (Operation &operation : loop.getBody()->without_terminator()) {
+        auto subview = dyn_cast<memref::SubViewOp>(operation);
+        if (!subview || !subview->hasOneUse())
+          continue;
+        auto sourceType = dyn_cast<MemRefType>(subview.getSource().getType());
+        if (!sourceType || sourceType.getRank() != 2 ||
+            !subview.getSource().getDefiningOp<memref::AllocOp>())
+          continue;
+        if (allocationWrittenInLoop(subview.getSource(), loop))
+          continue;
+        SmallVector<OpFoldResult> offsets = subview.getMixedOffsets();
+        if (offsets.size() != 2 ||
+            offsets[0].dyn_cast<Value>() != loop.getInductionVar() ||
+            !offsets[1].dyn_cast<Value>())
+          continue;
+
+        Operation *read = *subview->getUsers().begin();
+        if (read->getName().getStringRef() != "vector.transfer_read" ||
+            read->getBlock() != loop.getBody() || read->getNumResults() != 1)
+          continue;
+        if (!llvm::all_of(subview->getOperands(), [&](Value operand) {
+              return availableOutsideLoop(operand, loop);
+            }))
+          continue;
+        if (!llvm::all_of(read->getOperands(), [&](Value operand) {
+              return availableOutsideLoop(operand, loop, subview);
+            }))
+          continue;
+        result = Candidate{loop, subview, read};
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+    return result;
+  }
+
+  static Value cloneReadAt(OpBuilder &builder, Candidate candidate, Value row) {
+    IRMapping mapping;
+    mapping.map(candidate.loop.getInductionVar(), row);
+    builder.clone(*candidate.subview, mapping);
+    Operation *read = builder.clone(*candidate.read, mapping);
+    return read->getResult(0);
+  }
+
+  static void pipelineCandidate(Candidate candidate) {
+    scf::ForOp oldLoop = candidate.loop;
+    Location loc = oldLoop.getLoc();
+    OpBuilder builder(oldLoop);
+
+    Value first = cloneReadAt(builder, candidate, oldLoop.getLowerBound());
+    SmallVector<Value> initArgs(oldLoop.getInitArgs());
+    initArgs.push_back(first);
+    scf::ForOp newLoop = builder.create<scf::ForOp>(
+        loc, oldLoop.getLowerBound(), oldLoop.getUpperBound(),
+        oldLoop.getStep(), initArgs);
+    newLoop->setAttr("prefetch.explicit_pipeline", builder.getUnitAttr());
+
+    Block *newBody = newLoop.getBody();
+    if (!newBody->empty() && isa<scf::YieldOp>(newBody->back()))
+      newBody->back().erase();
+    builder.setInsertionPointToStart(newBody);
+    IRMapping mapping;
+    mapping.map(oldLoop.getInductionVar(), newLoop.getInductionVar());
+    for (auto [oldArg, newArg] :
+         llvm::zip(oldLoop.getRegionIterArgs(),
+                   newLoop.getRegionIterArgs().take_front(
+                       oldLoop.getNumRegionIterArgs())))
+      mapping.map(oldArg, newArg);
+    Value ready = newLoop.getRegionIterArgs().back();
+    mapping.map(candidate.read->getResult(0), ready);
+
+    // Issue the following iteration's load before cloning the current
+    // iteration's compute.  The carried `ready` vector feeds current compute,
+    // while this independent load can overlap it.
+    Value nextRow = builder.create<arith::AddIOp>(
+        loc, newLoop.getInductionVar(), newLoop.getStep());
+    Value hasNext = builder.create<arith::CmpIOp>(
+        loc, arith::CmpIPredicate::ult, nextRow, newLoop.getUpperBound());
+    scf::IfOp next = builder.create<scf::IfOp>(
+        loc, TypeRange{ready.getType()}, hasNext, /*withElseRegion=*/true);
+    builder.setInsertionPointToStart(&next.getThenRegion().front());
+    Value loaded = cloneReadAt(builder, candidate, nextRow);
+    builder.create<scf::YieldOp>(loc, ValueRange{loaded});
+    builder.setInsertionPointToStart(&next.getElseRegion().front());
+    builder.create<scf::YieldOp>(loc, ValueRange{ready});
+    builder.setInsertionPointAfter(next);
+
+    for (Operation &operation : oldLoop.getBody()->without_terminator()) {
+      if (&operation == candidate.subview.getOperation() ||
+          &operation == candidate.read)
+        continue;
+      builder.clone(operation, mapping);
+    }
+
+    SmallVector<Value> yields;
+    auto oldYield = cast<scf::YieldOp>(oldLoop.getBody()->getTerminator());
+    for (Value value : oldYield.getOperands())
+      yields.push_back(mapping.lookupOrDefault(value));
+    yields.push_back(next.getResult(0));
+    builder.create<scf::YieldOp>(loc, yields);
+
+    for (auto [oldResult, newResult] :
+         llvm::zip(oldLoop.getResults(),
+                   newLoop.getResults().take_front(oldLoop.getNumResults())))
+      oldResult.replaceAllUsesWith(newResult);
+    oldLoop.erase();
+  }
+
+  void runOnOperation() override {
+    func::FuncOp function = getOperation();
+    unsigned transformed = 0;
+    while (std::optional<Candidate> candidate = findCandidate(function)) {
+      pipelineCandidate(*candidate);
+      ++transformed;
+    }
+    if (transformed == 0) {
+      function.emitError("could not find a constant packed GEMM operand "
+                         "vector-read loop to pipeline");
+      return signalPassFailure();
+    }
+    function->setAttr(
+        "prefetch.explicit_pipeline_count",
+        IntegerAttr::get(IntegerType::get(function.getContext(), 64),
+                         transformed));
+  }
+};
+
 /// Prefetch the original source matrix used by the outer BMM reduction loop.
 ///
 /// The FlagGems/Triton-CPU payload first creates a ranked 4x4 view of an
@@ -749,9 +948,9 @@ struct PrefetchBmmSourcePass
       *this, "issue-every",
       llvm::cl::desc("Issue prefetches every N outer K-loop iterations"),
       llvm::cl::init(8)};
-  Option<int64_t> expectedRows{
-      *this, "expected-rows",
-      llvm::cl::desc("Required source tile row count"), llvm::cl::init(4)};
+  Option<int64_t> expectedRows{*this, "expected-rows",
+                               llvm::cl::desc("Required source tile row count"),
+                               llvm::cl::init(4)};
   Option<int64_t> expectedTileK{
       *this, "expected-tile-k",
       llvm::cl::desc("Required source tile reduction width"),
@@ -877,10 +1076,9 @@ struct PrefetchBmmSourcePass
           << argumentIndex.getValue() << ", found " << candidates.size()
           << "; diagnostic: scf_for_loops=" << loopCount
           << " reinterpret_cast=" << reinterpretCount
-          << " from_source_arg=" << fromSourceArgCount
-          << " static_" << expectedRows.getValue() << "x"
-          << expectedTileK.getValue() << "=" << staticTileCount
-          << " consumed=" << copyToAllocCount;
+          << " from_source_arg=" << fromSourceArgCount << " static_"
+          << expectedRows.getValue() << "x" << expectedTileK.getValue() << "="
+          << staticTileCount << " consumed=" << copyToAllocCount;
       return signalPassFailure();
     }
 
@@ -894,7 +1092,8 @@ struct PrefetchBmmSourcePass
         createIntegerLikeConstant(builder, loc, ivType, issueEvery);
     Value zeroValue = createIntegerLikeConstant(builder, loc, ivType, 0);
     if (!distanceValue || !frequencyValue || !zeroValue) {
-      function.emitError("outer K-loop induction type must be index or integer");
+      function.emitError(
+          "outer K-loop induction type must be index or integer");
       return signalPassFailure();
     }
 
@@ -917,13 +1116,12 @@ struct PrefetchBmmSourcePass
     Value shouldIssue =
         builder.create<arith::AndIOp>(loc, inBounds, onFrequency);
 
-    Value sourceElementDelta = builder.create<arith::ConstantIndexOp>(
-        loc, distance * expectedTileK);
+    Value sourceElementDelta =
+        builder.create<arith::ConstantIndexOp>(loc, distance * expectedTileK);
     Value futureOffset = builder.create<arith::AddIOp>(
         loc, candidate.currentOffset, sourceElementDelta);
 
-    SmallVector<OpFoldResult> sizes =
-        candidate.view.getConstifiedMixedSizes();
+    SmallVector<OpFoldResult> sizes = candidate.view.getConstifiedMixedSizes();
     SmallVector<OpFoldResult> strides =
         candidate.view.getConstifiedMixedStrides();
     auto guard = builder.create<scf::IfOp>(
@@ -936,15 +1134,15 @@ struct PrefetchBmmSourcePass
           futureView->setAttr("prefetch.distance_iterations",
                               nestedBuilder.getI64IntegerAttr(distance));
 
-          Value column = nestedBuilder.create<arith::ConstantIndexOp>(
-              nestedLoc, 0);
+          Value column =
+              nestedBuilder.create<arith::ConstantIndexOp>(nestedLoc, 0);
           for (int64_t row = 0; row < expectedRows; ++row) {
-            Value rowValue = nestedBuilder.create<arith::ConstantIndexOp>(
-                nestedLoc, row);
+            Value rowValue =
+                nestedBuilder.create<arith::ConstantIndexOp>(nestedLoc, row);
             auto prefetch = nestedBuilder.create<memref::PrefetchOp>(
-                nestedLoc, futureView.getResult(),
-                ValueRange{rowValue, column}, /*isWrite=*/false,
-                static_cast<uint32_t>(locality), /*isDataCache=*/true);
+                nestedLoc, futureView.getResult(), ValueRange{rowValue, column},
+                /*isWrite=*/false, static_cast<uint32_t>(locality),
+                /*isDataCache=*/true);
             (void)prefetch;
           }
           nestedBuilder.create<scf::YieldOp>(nestedLoc);
@@ -959,6 +1157,7 @@ void registerPrefetchPasses() {
   PassRegistration<AnalyzeGemmRhsPass>();
   PassRegistration<PrefetchMaterializePass>();
   PassRegistration<PrefetchGemmRhsPass>();
+  PassRegistration<PipelineGemmRhsLoadPass>();
   PassRegistration<PrefetchBmmSourcePass>();
 }
 

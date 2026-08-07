@@ -24,6 +24,10 @@ The plugin now also contains:
 - `prefetch-gemm-rhs`: an experimental structural matcher for the packed RHS
   panel in the public GEMM reproducer. It supports `coverage-lines`,
   `issue-every`, and `cache-line-bytes` in addition to distance/locality.
+- `pipeline-gemm-rhs-load`: a separate explicit-load software pipeline. It
+  reads the first packed operand vectors in a prologue, carries them through
+  `scf.for` iter_args, and issues the next row's reads before current compute.
+  It deliberately emits no `memref.prefetch`, LLVM prefetch, or AArch64 PRFM.
 
 The public GEMM test completes the full chain:
 
@@ -32,6 +36,17 @@ prefetch-gemm-rhs
 -> memref.prefetch
 -> llvm.intr.prefetch
 -> AArch64 PRFM
+```
+
+The explicit-load pass borrows the structure of TritonGPU's `Prefetch.cpp`,
+but targets the CPU bufferized IR rather than GPU shared-memory local loads.
+It rejects allocations written inside the consuming loop, because moving the
+first read into a prologue would otherwise create a use-before-write. Test it
+with:
+
+```bash
+bash prefetch_plugin/test_gemm_rhs_pipeline.sh \
+  /absolute/path/to/llvm-install
 ```
 
 ## One-command onsite BMM benchmark

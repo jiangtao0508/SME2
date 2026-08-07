@@ -36,8 +36,9 @@ bash scripts/capture_selected_kunpeng_mm.sh \
 ## 固定已选配置的第一版现场闭环
 
 当数值 profile 显示 RHS 是大于 L1 的 private packed allocation 时，第一版实验
-只验证 packed RHS 的 L2-to-L1 回填，不把它表述为原始矩阵的内存预取。生成一个
-roundtrip control 和一个 `distance=8/locality=L1/coverage=1/issue_every=1` 候选：
+验证两种不同机制：packed RHS 的 L2-to-L1 `PRFM` 回填，以及把下一轮 packed A/B
+显式 load 提前的 `scf.for` 软件流水。前者不应表述为原始矩阵的内存预取；后者不
+生成 `PRFM`。脚本生成一个 roundtrip control 和这两个候选：
 
 ```bash
 bash prefetch_plugin/onsite_prepare_selected_mm.sh \
@@ -49,7 +50,7 @@ bash prefetch_plugin/onsite_prepare_selected_mm.sh \
 prefetch 都分别跑两种顺序；每次脚本内部都会与 native baseline 配对：
 
 ```bash
-for payload in "$MM_ROUNDTRIP_LLIR" "$MM_PREFETCH_LLIR"; do
+for payload in "$MM_ROUNDTRIP_LLIR" "$MM_PREFETCH_LLIR" "$MM_PIPELINE_LLIR"; do
   for order in baseline-first prefetch-first; do
     SME_BENCH_ORDER="$order" bash prefetch_plugin/onsite_benchmark_selected_mm.sh \
       "$TRITON_ROOT" "$SELECTED_CONFIG" "$payload" "$MM_BENCH_OUTPUT"

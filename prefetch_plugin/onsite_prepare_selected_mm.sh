@@ -16,14 +16,14 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RUN_DIR="$OUTPUT_PARENT/mm-prefetch-$(date +%Y%m%d-%H%M%S)-$$"
 mkdir "$RUN_DIR"
 
-echo "[1/4] no-prefetch split roundtrip"
+echo "[1/5] no-prefetch split roundtrip"
 bash "$SCRIPT_DIR/onsite_split_replay.sh" \
   "$LLVM_PREFIX" "$TRITON_SHARED_OPT" "$INPUT_00" "$RUN_DIR/roundtrip" roundtrip
 SME_EXPECT_PREFETCH=0 bash "$SCRIPT_DIR/onsite_stage2.sh" \
   "$LLVM_PREFIX" "$TRITON_SHARED_OPT" "$COMPILER_PY" \
   "$RUN_DIR/roundtrip/01_roundtrip_no_prefetch.mlir" "$RUN_DIR/roundtrip/final"
 
-echo "[2/4] packed RHS L2-to-L1 prefetch: distance=8, one line, every row"
+echo "[2/5] packed RHS L2-to-L1 prefetch: distance=8, one line, every row"
 bash "$SCRIPT_DIR/onsite_split_replay.sh" \
   "$LLVM_PREFIX" "$TRITON_SHARED_OPT" "$INPUT_00" "$RUN_DIR/packed-rhs-d8-l1" \
   gemm-rhs 8 3 1 1 64
@@ -32,26 +32,50 @@ bash "$SCRIPT_DIR/onsite_stage2.sh" \
   "$RUN_DIR/packed-rhs-d8-l1/01_gemm_rhs_prefetch.mlir" \
   "$RUN_DIR/packed-rhs-d8-l1/final"
 
-echo "[3/4] verify instruction conservation"
+echo "[3/5] explicit packed A/B load software pipeline"
+bash "$SCRIPT_DIR/onsite_split_replay.sh" \
+  "$LLVM_PREFIX" "$TRITON_SHARED_OPT" "$INPUT_00" "$RUN_DIR/packed-load-pipeline" \
+  gemm-rhs-pipeline
+SME_EXPECT_PREFETCH=0 bash "$SCRIPT_DIR/onsite_stage2.sh" \
+  "$LLVM_PREFIX" "$TRITON_SHARED_OPT" "$COMPILER_PY" \
+  "$RUN_DIR/packed-load-pipeline/01_gemm_rhs_load_pipeline.mlir" \
+  "$RUN_DIR/packed-load-pipeline/final"
+
+echo "[4/5] verify instruction conservation"
 python3 - "$RUN_DIR" <<'PY'
-import json, pathlib, sys
+import hashlib, json, pathlib, sys
 root = pathlib.Path(sys.argv[1])
 variants = {}
-for name in ("roundtrip", "packed-rhs-d8-l1"):
+for name in ("roundtrip", "packed-rhs-d8-l1", "packed-load-pipeline"):
     disasm = (root / name / "final" / "kernel.disasm").read_text().lower()
-    variants[name] = {"prfm": disasm.count("prfm"), "fmopa": disasm.count("fmopa")}
+    llir = (root / name / "final" / "kernel.llir").read_bytes()
+    variants[name] = {
+        "prfm": disasm.count("prfm"),
+        "fmopa": disasm.count("fmopa"),
+        "llir_sha256": hashlib.sha256(llir).hexdigest(),
+    }
 if variants["roundtrip"]["prfm"] != 0:
     raise SystemExit("roundtrip unexpectedly contains PRFM")
 if variants["packed-rhs-d8-l1"]["prfm"] == 0:
     raise SystemExit("packed RHS variant contains no PRFM")
-if variants["roundtrip"]["fmopa"] == 0 or variants["roundtrip"]["fmopa"] != variants["packed-rhs-d8-l1"]["fmopa"]:
+if variants["packed-load-pipeline"]["prfm"] != 0:
+    raise SystemExit("explicit load pipeline unexpectedly contains PRFM")
+if variants["roundtrip"]["fmopa"] == 0 or any(
+    item["fmopa"] != variants["roundtrip"]["fmopa"] for item in variants.values()
+):
     raise SystemExit(f"FMOPA count changed: {variants}")
+if variants["packed-load-pipeline"]["llir_sha256"] == variants["roundtrip"]["llir_sha256"]:
+    raise SystemExit("explicit load pipeline was optimized back to the roundtrip LLIR")
 (root / "MM_PREPARED.json").write_text(json.dumps({"variants": variants}, indent=2) + "\n")
 for name, counts in variants.items():
-    print(f"MM_PREPARED variant={name} prfm={counts['prfm']} fmopa={counts['fmopa']}")
+    print(
+        f"MM_PREPARED variant={name} prfm={counts['prfm']} "
+        f"fmopa={counts['fmopa']} llir_sha256={counts['llir_sha256']}"
+    )
 PY
 
-echo "[4/4] preparation complete"
+echo "[5/5] preparation complete"
 echo "MM_PREPARE_DIR=$RUN_DIR"
 echo "MM_ROUNDTRIP_LLIR=$RUN_DIR/roundtrip/final/kernel.llir"
 echo "MM_PREFETCH_LLIR=$RUN_DIR/packed-rhs-d8-l1/final/kernel.llir"
+echo "MM_PIPELINE_LLIR=$RUN_DIR/packed-load-pipeline/final/kernel.llir"

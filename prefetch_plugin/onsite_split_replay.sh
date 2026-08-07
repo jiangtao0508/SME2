@@ -3,7 +3,7 @@ set -euo pipefail
 
 if [[ $# -lt 5 || $# -gt 10 ]]; then
   echo "usage: $0 <llvm-install-prefix> <triton-shared-opt> <00_input.mlir> <output-dir> <mode> [distance] [locality] [coverage-lines] [issue-every] [cache-line-bytes]" >&2
-  echo "mode: snapshot | roundtrip | gemm-rhs | bmm-source-a" >&2
+  echo "mode: snapshot | roundtrip | gemm-rhs | gemm-rhs-pipeline | bmm-source-a" >&2
   exit 2
 fi
 
@@ -21,8 +21,8 @@ ISSUE_EVERY="${9:-1}"
 CACHE_LINE_BYTES="${10:-64}"
 MLIR_OPT="$LLVM_INSTALL_DIR/bin/mlir-opt"
 
-if [[ "$MODE" != "snapshot" && "$MODE" != "roundtrip" && "$MODE" != "gemm-rhs" && "$MODE" != "bmm-source-a" ]]; then
-  echo "mode must be snapshot, roundtrip, gemm-rhs, or bmm-source-a" >&2
+if [[ "$MODE" != "snapshot" && "$MODE" != "roundtrip" && "$MODE" != "gemm-rhs" && "$MODE" != "gemm-rhs-pipeline" && "$MODE" != "bmm-source-a" ]]; then
+  echo "mode must be snapshot, roundtrip, gemm-rhs, gemm-rhs-pipeline, or bmm-source-a" >&2
   exit 1
 fi
 if [[ "$OUTPUT_DIR" == *" "* ]]; then
@@ -124,6 +124,10 @@ fi
 
 PREFETCHED="$OUTPUT_DIR/bufferized_before_sme.prefetch.mlir"
 PASS_PIPELINE="builtin.module(builtin.module(func.func(prefetch-gemm-rhs{distance=$DISTANCE locality=$LOCALITY coverage-lines=$COVERAGE_LINES issue-every=$ISSUE_EVERY cache-line-bytes=$CACHE_LINE_BYTES})))"
+if [[ "$MODE" == "gemm-rhs-pipeline" ]]; then
+  PASS_PIPELINE="builtin.module(builtin.module(func.func(pipeline-gemm-rhs-load)))"
+  FINAL_01="$OUTPUT_DIR/01_gemm_rhs_load_pipeline.mlir"
+fi
 if [[ "$MODE" == "bmm-source-a" ]]; then
   PASS_PIPELINE="builtin.module(builtin.module(func.func(prefetch-bmm-source{argument-index=0 distance=$DISTANCE locality=$LOCALITY issue-every=$ISSUE_EVERY expected-rows=4 expected-tile-k=4})))"
   FINAL_01="$OUTPUT_DIR/01_bmm_source_a_prefetch.mlir"
@@ -133,7 +137,11 @@ fi
   --pass-pipeline="$PASS_PIPELINE" \
   "$BUFFERIZED" \
   -o "$PREFETCHED"
-grep -q 'memref.prefetch' "$PREFETCHED"
+if [[ "$MODE" == "gemm-rhs-pipeline" ]]; then
+  grep -q 'prefetch.explicit_pipeline' "$PREFETCHED"
+else
+  grep -q 'memref.prefetch' "$PREFETCHED"
+fi
 
 if [[ "$MODE" == "bmm-source-a" ]]; then
   python3 "$PLUGIN_DIR/audit_bmm_source_prefetch.py" \
@@ -155,7 +163,11 @@ python3 "$PLUGIN_DIR/split_transform_replay.py" resume \
 
 PREFETCH_COUNT="$(grep -c 'llvm.intr.prefetch' "$FINAL_01" || true)"
 SME_COUNT="$(grep -c 'arm_sme.intr.mopa' "$FINAL_01" || true)"
-if [[ "$PREFETCH_COUNT" -eq 0 || "$SME_COUNT" -eq 0 ]]; then
+if [[ "$MODE" == "gemm-rhs-pipeline" && "$PREFETCH_COUNT" -ne 0 ]]; then
+  echo "explicit load pipeline unexpectedly generated LLVM prefetch" >&2
+  exit 1
+fi
+if [[ "$MODE" != "gemm-rhs-pipeline" && "$PREFETCH_COUNT" -eq 0 ]] || [[ "$SME_COUNT" -eq 0 ]]; then
   echo "expected LLVM prefetch and ArmSME MOPA after resume" >&2
   echo "llvm.intr.prefetch=$PREFETCH_COUNT arm_sme.intr.mopa=$SME_COUNT" >&2
   exit 1
