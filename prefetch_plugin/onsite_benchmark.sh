@@ -11,7 +11,7 @@ Runs the same FlagGems BMM twice with triton.testing.do_bench:
   2. prefetch with OVERRIDE_DIR enabled
 
 Defaults:
-  shape:  [4, 8192, 2048] x [4, 2048, 64]
+  shape:  [4, 8192, 64] x [4, 64, 2048]   # M=8192, K=64, N=2048（现场确认 MKN）
   dtype:  bfloat16
   warmup: 5
   reps:   20
@@ -57,8 +57,8 @@ python -c 'import torch, triton, flag_gems' >/dev/null 2>&1 || {
 
 export SME_BENCH_BATCH=${SME_BENCH_BATCH:-4}
 export SME_BENCH_M=${SME_BENCH_M:-8192}
-export SME_BENCH_N=${SME_BENCH_N:-64}
-export SME_BENCH_K=${SME_BENCH_K:-2048}
+export SME_BENCH_N=${SME_BENCH_N:-2048}
+export SME_BENCH_K=${SME_BENCH_K:-64}
 export SME_BENCH_DTYPE=${SME_BENCH_DTYPE:-bfloat16}
 export SME_BENCH_WARMUP=${SME_BENCH_WARMUP:-5}
 export SME_BENCH_REP=${SME_BENCH_REP:-20}

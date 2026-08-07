@@ -1,0 +1,97 @@
+{
+  "profile_version": "arm-sme-hardware-profile-v1",
+  "name": "onsite_kunpeng_bmm_prefetch",
+  "profile_kind": "target_template",
+  "calibrated": false,
+  "provenance": {
+    "evidence_level": "unfilled_target_template",
+    "sources": [],
+    "unknowns": [
+      "CPU 型号/核数：现场 lscpu 确认（假设 64 核 Kunpeng，SME 可用）",
+      "L1d 容量：假设 64 KiB，现场 /sys/devices/system/cpu/cpu0/cache/index0/size 确认",
+      "L2 容量与共享域：假设每核私有 512 KiB，现场 cache/index2 确认；本表 l2 填的是 LLC 视角",
+      "cache line：假设 64 B（与复刻 IR 计算一致），现场确认",
+      "SVL：假设 512 bit（fp32 16 lane），现场 rdvl 确认",
+      "内存延迟/带宽/1z-2z-4z：模板值，现场用 hardware_calibration 实测后替换",
+      "ZA fp32 tile 数：模板值 4，现场 SME 文档确认",
+      "SVE/SME 重叠：unknown，cost model 必须用串行成本",
+      "编译器/ABI：现场 triton-shared-opt 对应 LLVM 版本确认"
+    ]
+  },
+  "target": {
+    "architecture": "Armv9-A",
+    "platform": "kunpeng_arm_server",
+    "os": "openEuler",
+    "sme_generation": "SME1"
+  },
+  "caches": {
+    "l1d": {
+      "size_bytes": 65536,
+      "sets": 256,
+      "line_bytes": 64,
+      "associativity": 8
+    },
+    "l2": {
+      "size_bytes": 33554432,
+      "effective_working_set_bytes": 16777216,
+      "sets": 65536,
+      "line_bytes": 64,
+      "associativity": 16,
+      "sharing_scope": "cluster_shared"
+    }
+  },
+  "translation": {
+    "page_bytes": 16384,
+    "l1d_tlb_entries": 128,
+    "l2_tlb_state": "unknown"
+  },
+  "vector_matrix": {
+    "svl_bits": 512,
+    "fp32_lanes": 16,
+    "za_fp32_tile_count": 4,
+    "z_register_count": 32,
+    "multi_vector_load_widths": [1, 2, 4]
+  },
+  "execution_units": {
+    "cpu": {"effective_gflops": 25.0, "evidence": "placeholder"},
+    "sve": {"effective_gflops": 160.0, "pack_gbps": 120.0, "evidence": "placeholder"},
+    "sme": {"effective_gflops": 1000.0, "evidence": "placeholder"},
+    "memory": {
+      "load_1z_gbps": 120.0,
+      "load_2z_gbps": 180.0,
+      "load_4z_gbps": 260.0,
+      "latency_cycles": 220,
+      "evidence": "placeholder"
+    }
+  },
+  "concurrency": {
+    "sve_sme_overlap": "unknown",
+    "cpu_sme_resource_relationship": "unknown",
+    "memory_contention": "unknown",
+    "allowed_cost_compositions": ["serial"]
+  },
+  "compiler": {
+    "family": "openeuler_llvm",
+    "version": "20.1.8",
+    "sme_abi": "aarch64_sme_abi",
+    "required_flags": ["+sme", "+sve", "+sve2"]
+  },
+  "l1_size": 65536,
+  "l1_sets": 256,
+  "l1_line_size": 64,
+  "l1_assoc": 8,
+  "l2_size": 33554432,
+  "l2_effective": 16777216,
+  "l2_sets": 65536,
+  "l2_line_size": 64,
+  "l2_assoc": 16,
+  "page_size": 16384,
+  "tlb_entries": 128,
+  "za_tile_count": 4,
+  "z_register_count": 32,
+  "vl": 16,
+  "p_effective_sme_gflops": 1000.0,
+  "b_effective_1z_gbps": 120.0,
+  "b_effective_2z_gbps": 180.0,
+  "b_effective_4z_gbps": 260.0
+}

@@ -1,0 +1,64 @@
+{
+  "config_version": "onsite-prefetch-case-v1",
+  "case_id": "bmm_bf16_8192_64_2048_batch4",
+  "source_test": "test_blas_ops_mem.py::test_accuracy_bmm_membound[dtype2-8192-64-2048]",
+  "confirmed": {
+    "dtype": "bf16",
+    "shape": {"M": 8192, "N": 2048, "K": 64, "batch": 4},
+    "tile": {"TILE_M": 4, "TILE_N": 4, "TILE_K": 4, "GROUP_M": 1}
+  },
+  "derived": {
+    "grid": {"x": 2048, "y": 512, "z": 4},
+    "total_programs": 4194304,
+    "k_iterations": 16,
+    "a_row_stride_bytes": 128,
+    "b_row_stride_bytes": 4096,
+    "per_program_bytes": {
+      "a_panel_total": 512,
+      "b_panel_total": 512,
+      "a_panel_per_iteration": 32,
+      "b_panel_per_iteration": 32,
+      "output_tile": 64
+    },
+    "global_tensor_bytes": {
+      "a": 4194304,
+      "b": 1048576,
+      "o": 268435456
+    },
+    "cache_line_consumption": {
+      "line_bytes": 64,
+      "a_bytes_per_row_per_iteration": 8,
+      "iterations_per_a_line": 8,
+      "a_lines_per_program": 8,
+      "b_bytes_per_row_per_iteration": 8
+    },
+    "reuse": {
+      "a_cross_program_reuse": 512,
+      "a_reuse_dimension": "pid_n",
+      "b_cross_program_reuse": 2048,
+      "b_reuse_dimension": "pid_m",
+      "a_share_same_address_programs": "同 pid_m/pid_b 的所有 pid_n",
+      "b_share_same_address_programs": "同 pid_n/pid_b 的所有 pid_m"
+    }
+  },
+  "prefetch_target": {
+    "primary": "A_panel",
+    "secondary": "B_panel",
+    "ir_anchor": "memref.copy %reinterpret_cast_1, %alloc（A 视图，stride=K）",
+    "distance": 8,
+    "issue_every": 8,
+    "locality_l1": 3,
+    "locality_l2": 2,
+    "static_prefetches_per_program": 4,
+    "prologue_variant_prefetches": 8
+  },
+  "runtime_onsite_fill": {
+    "num_threads": null,
+    "omp_num_threads": null,
+    "cpu_binding": null,
+    "actual_cpu_model": null,
+    "core_count": null,
+    "measured_miss_baseline": null,
+    "measured_miss_prefetch": null
+  }
+}
