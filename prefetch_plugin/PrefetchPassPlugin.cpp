@@ -828,13 +828,12 @@ struct PrefetchBmmSourcePass
             viewType.getShape()[1] != expectedTileK)
           continue;
 
-        bool copiedToPrivateTile = llvm::any_of(
-            view.getResult().getUsers(), [&](Operation *user) {
-              auto copy = dyn_cast<memref::CopyOp>(user);
-              return copy && copy.getSource() == view.getResult() &&
-                     copy.getTarget().getDefiningOp<memref::AllocOp>();
-            });
-        if (!copiedToPrivateTile)
+        // The onsite Triton may bufferize the A/B panel either as a private
+        // memref.copy -> alloc (local reproduction) or as a direct vector
+        // transfer from the strided view (no packing copy).  The source
+        // argument + static 4x4 checks already uniquely identify the panel,
+        // so only require the view to be consumed at all.
+        if (view.getResult().use_empty())
           continue;
 
         OpFoldResult mixedOffset = view.getConstifiedMixedOffset();
@@ -868,13 +867,7 @@ struct PrefetchBmmSourcePass
               viewType.getShape()[0] == expectedRows &&
               viewType.getShape()[1] == expectedTileK)
             ++staticTileCount;
-          bool copiedToAlloc = llvm::any_of(
-              view.getResult().getUsers(), [&](Operation *user) {
-                auto copy = dyn_cast<memref::CopyOp>(user);
-                return copy && copy.getSource() == view.getResult() &&
-                       copy.getTarget().getDefiningOp<memref::AllocOp>();
-              });
-          if (copiedToAlloc)
+          if (!view.getResult().use_empty())
             ++copyToAllocCount;
         }
       });
@@ -887,7 +880,7 @@ struct PrefetchBmmSourcePass
           << " from_source_arg=" << fromSourceArgCount
           << " static_" << expectedRows.getValue() << "x"
           << expectedTileK.getValue() << "=" << staticTileCount
-          << " copy_to_alloc=" << copyToAllocCount;
+          << " consumed=" << copyToAllocCount;
       return signalPassFailure();
     }
 
