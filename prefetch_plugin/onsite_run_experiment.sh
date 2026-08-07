@@ -179,10 +179,17 @@ bash "$PLUGIN_DIR/onsite_prepare_source_a.sh" \
   "$INPUT_00" "$RUN_DIR" \
   2>&1 | tee "$RUN_DIR/$CURRENT_STEP.log"
 
+# prepare_source_a creates its own source-a-<ts>-<pid>/ subdir below RUN_DIR.
+PREPARE_ROOT="$(ls -dt "$RUN_DIR"/source-a-* 2>/dev/null | head -1)"
+if [[ -z "$PREPARE_ROOT" ]]; then
+  echo "ERROR: prepare_source_a output dir not found under $RUN_DIR" >&2
+  exit 2
+fi
+
 # ---------- 5/6. 每变体：正确性 + 配对计时 ----------
 run_variant() {
   local name=$1
-  local llir_dir="$RUN_DIR/$name/final"
+  local llir_dir="$PREPARE_ROOT/$name/final"
   local override_dir="$RUN_DIR/override/$name"
   mkdir -p "$override_dir"
   cp "$llir_dir/kernel.llir" "$override_dir/kernel.llir"
@@ -221,7 +228,7 @@ echo "[7/7] build report"
   echo "input_00: $INPUT_00"
   echo
   echo "== PREPARED (PRFM/FMOPA per variant) =="
-  python3 - "$RUN_DIR/PREPARED.json" <<'PY'
+  python3 - "$PREPARE_ROOT/PREPARED.json" <<'PY'
 import json, sys
 data = json.load(open(sys.argv[1]))
 for name, v in data["variants"].items():
